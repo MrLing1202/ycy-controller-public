@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>YCY Controller</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0f;--card:#12121a;--card2:#1a1a2a;--border:#1e1e2e;--text:#e0e0e0;--dim:#888;--accent:#7c3aed;--accent2:#a78bfa;--green:#10b981;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--pink:#ec4899;--r:8px}
+:root.light{--bg:#f0f0f5;--card:#fff;--card2:#f5f5fa;--border:#e0e0e8;--text:#1a1a2e;--dim:#666;--accent:#6d28d9;--accent2:#7c3aed}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;height:100vh;height:100dvh}
+.topbar{display:flex;align-items:center;justify-content:space-between;background:var(--card);border-bottom:1px solid var(--border);padding:6px 10px;font-size:0.78em;flex-shrink:0;height:36px}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px}
+.dot.on{background:var(--green);box-shadow:0 0 4px var(--green)}.dot.off{background:var(--red)}
+.tab-content{flex:1;overflow:hidden;position:relative}
+.tab-panel{position:absolute;inset:0;overflow-y:auto;padding:8px;display:none}
+.tab-panel.active{display:block}
+.tabbar{display:flex;background:var(--card);border-top:1px solid var(--border);flex-shrink:0;height:44px}
+.tabbar button{flex:1;background:none;border:none;color:var(--dim);font-size:0.72em;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:color .15s}
+.tabbar button.active{color:var(--accent2)}
+.tabbar button:active{transform:scale(0.93)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:8px;margin-bottom:6px}
+.card h3{font-size:0.78em;color:var(--accent2);margin-bottom:6px}
+.btn{display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border:none;border-radius:6px;font-size:0.75em;cursor:pointer;transition:all .1s;font-weight:600;user-select:none;-webkit-tap-highlight-color:transparent}
+.btn:active{transform:scale(0.93);filter:brightness(0.8)}
+.btn-p{background:var(--accent);color:#fff}
+.btn-d{background:var(--red);color:#fff}
+.btn-s{background:var(--green);color:#fff}
+.btn-g{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-g:active{border-color:var(--accent)}
+.btn-ai{background:linear-gradient(135deg,#7c3aed,#ec4899);color:#fff;padding:8px 16px;border-radius:var(--r);font-size:0.82em}
+.btn-ai.running{background:linear-gradient(135deg,#ef4444,#f59e0b)}
+.btn-group{display:flex;gap:4px;flex-wrap:wrap}
+.btn-sm{padding:4px 8px;font-size:0.7em}
+select,input[type=number],input[type=text]{padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.75em;outline:none}
+input[type=range]{width:100%;height:4px;-webkit-appearance:none;background:var(--border);border-radius:2px;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--accent);cursor:pointer;border:2px solid var(--bg)}
+.slider-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.slider-row label{width:50px;font-size:0.72em;color:var(--dim);flex-shrink:0}
+.slider-row input[type=range]{flex:1}
+.slider-row .val{width:28px;text-align:right;font-size:0.78em;color:var(--accent2);font-weight:600;flex-shrink:0}
+.pat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+.pat-btn{padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;cursor:pointer;text-align:center;font-size:0.72em;transition:all .1s}
+.pat-btn:active{transform:scale(0.93)}.pat-btn.active{border-color:var(--accent);background:rgba(124,58,237,.12)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin:4px 0}
+.stat{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;text-align:center}
+.stat .lb{font-size:0.58em;color:var(--dim)}.stat .vl{font-size:0.82em;font-weight:700;color:var(--accent2)}
+.bar-bg{width:100%;height:5px;background:var(--bg);border:1px solid var(--border);border-radius:3px;overflow:hidden;margin:3px 0}
+.bar-fill{height:100%;border-radius:3px;transition:width .3s;background:linear-gradient(90deg,var(--green),var(--orange),var(--red))}
+.narration{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;flex:1;overflow-y:auto;font-size:0.75em;line-height:1.5;min-height:60px}
+.narration .entry{padding:1px 0;border-bottom:1px solid rgba(30,30,46,.2)}
+.log-box{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;flex:1;overflow-y:auto;font-family:monospace;font-size:0.65em;line-height:1.4;color:var(--dim)}
+.log-box .info{color:var(--blue)}.log-box .warn{color:var(--orange)}.log-box .err{color:var(--red)}.log-box .ok{color:var(--green)}.log-box .ai{color:var(--pink)}
+.fb-row{display:flex;gap:6px;margin:4px 0}
+.fb-btn{flex:1;padding:8px;border:2px solid var(--border);border-radius:8px;background:var(--bg);font-size:1.1em;cursor:pointer;text-align:center;transition:all .1s}
+.fb-btn:active{transform:scale(0.9)}.fb-btn.sel{border-color:var(--accent);background:rgba(124,58,237,.1)}
+.chart-wrap{background:var(--bg);border:1px solid var(--border);border-radius:6px;height:40px;overflow:hidden}
+.chart-wrap canvas{width:100%;height:100%}
+.speed-bars{display:flex;gap:4px;align-items:flex-end;height:30px}
+.speed-bar{flex:1;border-radius:2px 2px 0 0;transition:height .3s;min-height:2px}
+.speed-bar.a{background:var(--blue)}.speed-bar.b{background:var(--pink)}.speed-bar.c{background:var(--orange)}
+.chat-row{display:flex;gap:4px;margin-top:4px}
+.chat-row input{flex:1}
+.mic-meter{height:3px;background:var(--bg);border-radius:2px;overflow:hidden;margin:4px 0}
+.mic-meter-fill{height:100%;width:0%;border-radius:2px;transition:width .1s}
+.toast{position:fixed;top:40px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--accent);border-radius:8px;padding:6px 14px;font-size:0.78em;z-index:200;transition:opacity .3s;opacity:0;pointer-events:none}
+.toast.show{opacity:1}
+.emergency{position:absolute;bottom:52px;right:8px;z-index:50}
+.emergency .btn{width:40px;height:40px;border-radius:50%;font-size:0.9em;box-shadow:0 2px 8px rgba(239,68,68,.4)}
+</style>
+<script src="/static/app.js"></script>
+</head>
+<body>
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:6px">
+    <span class="dot" id="dot"></span>
+    <span id="statusText" style="font-size:0.75em">未连接</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span id="batIcon">🔋</span><span id="batText" style="font-size:0.75em">--%</span>
+    <button class="btn btn-sm" id="themeBtn" onclick="toggleTheme()">🌙</button>
+    <button class="btn btn-sm mic-btn" id="micBtn" onclick="toggleMic()">🎤</button>
+    <button class="btn btn-sm btn-p" id="bleBtn" onclick="bleConnect()">📱蓝牙</button>
+  </div>
+</div>
+<div class="mic-meter"><div class="mic-meter-fill" id="micMeter"></div></div>
+<div id="toast" class="toast"></div>
+<div class="tab-content">
+
+  <!-- Tab: AI -->
+  <div class="tab-panel active" id="tabAI">
+    <div class="card">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <select id="aiPersonality" style="flex:1"><option>加载中...</option></select>
+        <button class="btn btn-ai" id="btnAiToggle" onclick="toggleAI()">🤖 启动</button>
+      <button class="btn btn-sm" id="randomBtn" style="background:var(--orange);color:#fff" onclick="toggleRandom()">🎲 随机</button>
+      <span style="font-size:0.65em;color:var(--dim)">休息率</span><input type="number" id="restChance" value="25" min="0" max="100" style="width:40px;font-size:0.7em">%
+      <span style="font-size:0.65em;color:var(--dim)">间隔</span><input type="number" id="randIntervalMin" value="2" min="1" style="width:35px;font-size:0.7em">-<input type="number" id="randIntervalMax" value="6" min="1" style="width:35px;font-size:0.7em">
+        <input type="number" id="aiDuration" value="1800" min="60" style="width:55px">
+      </div>
+      <div id="aiCurrent" style="display:none;padding:4px;background:var(--bg);border-radius:6px;margin-bottom:4px">
+        <span id="aiMood" style="font-size:1.2em">🤖</span>
+        <span id="aiBehavior" style="font-size:0.78em;color:var(--accent2);margin-left:6px">--</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:0.68em;color:var(--dim)"><span>强度</span><span id="aiIntensityText">0%</span></div>
+      <div class="bar-bg"><div class="bar-fill" id="aiIntensityBar" style="width:0%"></div></div>
+      <div class="chart-wrap"><canvas id="intensityChart"></canvas></div>
+      <div class="stats">
+        <div class="stat"><div class="lb">步数</div><div class="vl" id="aiSteps">0</div></div>
+        <div class="stat"><div class="lb">Edge</div><div class="vl" id="aiEdges">0</div></div>
+        <div class="stat"><div class="lb">时间</div><div class="vl" id="aiElapsed">0s</div></div>
+        <div class="stat"><div class="lb">反馈</div><div class="vl" id="fbDisplay">--</div></div>
+      </div>
+      <div class="fb-row">
+        <div class="fb-btn" id="fbGood" onclick="sendFeedback(true)">👍</div>
+        <div class="fb-btn" id="fbBad" onclick="sendFeedback(false)">👎</div>
+      </div>
+    </div>
+    <div class="card" style="display:flex;flex-direction:column;flex:1;min-height:0">
+      <div style="font-size:0.68em;color:var(--dim);margin-bottom:3px">💬 对话</div>
+      <div class="narration" id="aiNarrationBox" style="flex:1"><div style="color:var(--dim);text-align:center;padding:20px 0;font-size:0.8em">启动AI后显示...</div></div>
+      <div class="chat-row">
+        <input type="text" id="chatInput" placeholder="说点什么..." onkeydown="if(event.key==='Enter')sendChat()">
+        <button class="btn btn-sm btn-p" onclick="sendChat()">发送</button>
+        <button class="btn btn-sm btn-g" id="voiceBtn" onmousedown="startVoice()" onmouseup="stopVoice()" ontouchstart="startVoice()" ontouchend="stopVoice()">🎙️</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab: Manual -->
+  <div class="tab-panel" id="tabManual">
+    <div class="card">
+      <h3>📡 连接</h3>
+      <div class="btn-group">
+        <button class="btn btn-sm btn-p" onclick="doScan()">🔍扫描</button>
+        <button class="btn btn-sm btn-s" onclick="doConnect()">🔗连接</button>
+        <button class="btn btn-sm btn-g" onclick="doDisconnect()">⏏️断开</button>
+      </div>
+      <div id="scanList" style="max-height:60px;overflow-y:auto;font-size:0.7em;margin-top:4px"></div>
+    </div>
+    <div class="card">
+      <h3>🎚️ 速率</h3>
+      <div class="slider-row"><label>🔄旋转</label><input type="range" id="sliderA" min="0" max="100" value="0" oninput="updateVal('A',this.value);sendSpeedDebounced()"><span class="val" id="valA">0</span></div>
+      <div class="slider-row"><label>💨吮吸</label><input type="range" id="sliderB" min="0" max="100" value="0" oninput="updateVal('B',this.value);sendSpeedDebounced()"><span class="val" id="valB">0</span></div>
+      <div class="slider-row"><label>📳震动</label><input type="range" id="sliderC" min="0" max="100" value="0" oninput="updateVal('C',this.value);sendSpeedDebounced()"><span class="val" id="valC">0</span></div>
+      <div style="font-size:0.65em;color:var(--dim);text-align:center">拖动实时发送</div>
+      <div class="speed-bars" style="margin-top:4px"><div class="speed-bar a" style="height:0%"></div><div class="speed-bar b" style="height:0%"></div><div class="speed-bar c" style="height:0%"></div></div>
+    </div>
+    <div class="card">
+      <h3>🎛️ 内建模式</h3>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px"><span style="font-size:0.7em;width:35px">旋转</span><input type="number" id="modeA" min="0" max="7" value="0" style="width:40px"><button class="btn btn-sm btn-g" onclick="setMode('A')">设</button></div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px"><span style="font-size:0.7em;width:35px">吮吸</span><input type="number" id="modeB" min="0" max="7" value="0" style="width:40px"><button class="btn btn-sm btn-g" onclick="setMode('B')">设</button></div>
+      <div style="display:flex;gap:4px;align-items:center"><span style="font-size:0.7em;width:35px">震动</span><input type="number" id="modeC" min="0" max="7" value="0" style="width:40px"><button class="btn btn-sm btn-g" onclick="setMode('C')">设</button></div>
+    </div>
+  </div>
+
+  <!-- Tab: Patterns -->
+  <div class="tab-panel" id="tabPattern">
+    <div class="card">
+      <h3>🎭 自动模式</h3>
+      <div class="pat-grid" style="margin-bottom:6px">
+        <div class="pat-btn" onclick="selectPattern('random')" id="pat-random"><div style="font-size:1.1em">🎲</div>随机</div>
+        <div class="pat-btn" onclick="selectPattern('wave')" id="pat-wave"><div style="font-size:1.1em">🌊</div>波浪</div>
+        <div class="pat-btn" onclick="selectPattern('pulse')" id="pat-pulse"><div style="font-size:1.1em">💓</div>脉冲</div>
+        <div class="pat-btn" onclick="selectPattern('escalate')" id="pat-escalate"><div style="font-size:1.1em">📈</div>渐进</div>
+        <div class="pat-btn" onclick="selectPattern('combo')" id="pat-combo"><div style="font-size:1.1em">🔀</div>组合</div>
+        <div class="pat-btn" onclick="selectPattern('script')" id="pat-script"><div style="font-size:1.1em">📜</div>脚本</div>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <span style="font-size:0.68em;color:var(--dim)">时长</span><input type="number" id="patDuration" value="60" min="0" style="width:50px">
+        <span style="font-size:0.68em;color:var(--dim)">间隔</span><input type="number" id="patIntervalMin" value="3" min="1" style="width:35px">-<input type="number" id="patIntervalMax" value="10" min="1" style="width:35px">
+      </div>
+      <div class="btn-group"><button class="btn btn-s" onclick="startPattern()">▶启动</button><button class="btn btn-d" onclick="stopPattern()">⏹停止</button></div>
+      <div id="scriptArea" style="display:none;margin-top:4px"><textarea id="scriptInput" style="width:100%;height:50px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:0.7em;color:var(--text);outline:none;font-family:monospace">[{"a":15,"b":8,"c":5},{"a":0,"b":0,"c":0}]</textarea></div>
+    </div>
+    <div class="card">
+      <h3>⏺ 录制</h3>
+      <div class="btn-group">
+        <button class="btn btn-sm btn-g" id="recBtn" onclick="toggleRecord()">⏺</button>
+        <button class="btn btn-sm btn-s" onclick="playRecording()">▶回放</button>
+        <button class="btn btn-sm btn-p" onclick="exportRecording()">💾导出</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>✏️ 人格编辑</h3>
+      <div class="btn-group">
+        <select id="editPersonality" onchange="loadPersonalityForEdit()" style="flex:1"><option value="">选择人格...</option></select>
+        <button class="btn btn-sm btn-s" onclick="savePersonality()">💾保存</button>
+        <button class="btn btn-sm btn-p" onclick="createPersonality()">➕新建</button>
+      </div>
+      <div style="margin-top:4px;display:flex;gap:4px"><input type="text" id="editName" placeholder="名称" style="flex:1"><input type="text" id="editEmoji" placeholder="emoji" style="width:45px"><input type="text" id="editId" placeholder="ID" style="width:80px"></div>
+      <textarea id="editDescription" placeholder="描述..." style="width:100%;height:30px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:0.7em;color:var(--text);outline:none;margin-top:4px"></textarea>
+      <textarea id="editTraits" placeholder='{"intensity_ceiling":0.8}' style="width:100%;height:40px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:0.65em;color:var(--text);outline:none;font-family:monospace;margin-top:4px"></textarea>
+    </div>
+  </div>
+
+  <!-- Tab: Log -->
+  <div class="tab-panel" id="tabLog">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <span style="font-size:0.75em;color:var(--dim)">📋 日志</span>
+      <button class="btn btn-sm btn-g" onclick="clearLog()">清空</button>
+    </div>
+    <div class="log-box" id="logBox" style="height:calc(100vh - 120px)"></div>
+  </div>
+</div>
+
+<div class="emergency" style="display:flex;flex-direction:column;align-items:center;gap:4px">
+    <input type="number" id="stopDuration" value="0" min="0" max="60" style="width:45px;text-align:center;font-size:0.65em;padding:2px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)" placeholder="秒">
+    <button class="btn btn-d" onclick="emergencyStop()">🛑</button>
+    <span style="font-size:0.5em;color:var(--dim)">0=永久</span>
+  </div>
+
+<div class="tabbar">
+  <button onclick="switchTab('tabAI')" id="tabBtnAI" class="active">🤖<span>AI</span></button>
+  <button onclick="switchTab('tabManual')" id="tabBtnManual">🎚️<span>手动</span></button>
+  <button onclick="switchTab('tabPattern')" id="tabBtnPattern">🎭<span>模式</span></button>
+  <button onclick="switchTab('tabLog')" id="tabBtnLog">📋<span>日志</span></button>
+  <button onclick="switchTab('tabSettings')" id="tabBtnSettings">⚙️<span>设置</span></button>
+</div>
+
+</body>
+</html>
