@@ -1,0 +1,32 @@
+{
+  "id": "example",
+  "name": "示例人格",
+  "emoji": "🎭",
+  "description": "人格描述",
+  "traits": {
+    "intensity_ceiling": 0.8,
+    "intensity_floor": 0.1,
+    "patience": 0.5,
+    "variety": 0.5,
+    "tease_factor": 0.3,
+    "control_style": "balanced",
+    "rest_ratio": 0.2,
+    "dominance": 0.5
+  },
+  "pacing": {
+    "warmup_steps": 8,
+    "warmup_curve": "ease_in",
+    "cooldown_steps": 5,
+    "base_interval": [3.0, 6.0],
+    "excitement_interval": [2.0, 4.0]
+  },
+  "channel_weights": {
+    "A": 0.33,
+    "B": 0.33,
+    "C": 0.34
+  },
+  "rules": [
+    "规则1",
+    "规则2"
+  ]
+}
