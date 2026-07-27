@@ -81,6 +81,7 @@ socket_on('battery', function(d) {
 });
 socket_on('scan_result', function(d) {
   var el = document.getElementById('scanList');
+  if (!el) return;
   if (!d.devices.length) { el.innerHTML = '<div style="color:var(--red)">未发现设备</div>'; return; }
   el.innerHTML = d.devices.map(function(dev) {
     return '<div style="padding:6px;cursor:pointer;border-bottom:1px solid var(--border)" onclick="selectDevice(\'' + dev.name + '\')">' + dev.name + ' <span style="color:var(--dim)">' + dev.address + '</span></div>';
@@ -134,6 +135,7 @@ socket_on('ai_tick', function(d) {
     document.getElementById('sliderC').value = d.speeds.c || 0;
     document.getElementById('valC').textContent = d.speeds.c || 0;
     updateSpeedBars(d.speeds.a, d.speeds.b, d.speeds.c);
+    updateChannelMeters(d.speeds.a, d.speeds.b, d.speeds.c);
     recordStep(d.speeds.a, d.speeds.b, d.speeds.c);
     if (bleChar) { bleWrite(d.speeds.a, d.speeds.b, d.speeds.c); }
   }
@@ -184,7 +186,7 @@ function toggleAI() {
       aiRunning = false; randomRunning = false;
       updateAiUI();
       var btn = document.getElementById('randomBtn');
-      if (btn) { btn.textContent = '🎲 随机'; btn.style.background = 'var(--orange)'; btn.style.boxShadow = 'none'; }
+      if (btn) { btn.textContent = '🎲 随机'; btn.classList.remove('running'); }
       showToast('AI+设备已停止', 'warn');
       return;
     }
@@ -207,10 +209,17 @@ function toggleAI() {
 }
 function updateAiUI() {
   var btn = document.getElementById('btnAiToggle');
-  if (aiRunning) { btn.className = 'btn btn-ai running'; btn.textContent = '⏹ 停止 AI'; }
-  else { btn.className = 'btn btn-ai'; btn.textContent = '🤖 启动 AI'; document.getElementById('aiCurrent').style.display = 'none'; }
+  var card = document.getElementById('aiStatusCard');
+  if (aiRunning) {
+    btn.className = 'btn btn-ai running'; btn.textContent = '⏹ 停止 AI';
+    if (card) card.classList.add('running');
+  } else {
+    btn.className = 'btn btn-ai'; btn.textContent = '🤖 启动 AI';
+    document.getElementById('aiCurrent').style.display = 'none';
+    if (card) card.classList.remove('running');
+  }
 }
-function doScan() { buttonFeedback(this); document.getElementById('scanList').innerHTML = '<span style="animation:pulse 1s infinite">🔍 扫描中...</span>'; socket_emit('scan'); }
+function doScan() { buttonFeedback(this); var el = document.getElementById('scanList'); if(el) el.innerHTML = '<span style="animation:pulse 1s infinite">🔍 扫描中...</span>'; socket_emit('scan'); }
 function doConnect() { buttonFeedback(this); socket_emit('connect', {name: ''}); showToast('正在连接...', 'info'); }
 function doDisconnect() { buttonFeedback(this); socket_emit('disconnect'); }
 function selectDevice(name) { socket_emit('connect', {name: name}); showToast('连接: ' + name, 'info'); }
@@ -342,6 +351,77 @@ function stopVoice() {
 // 双层架构：
 //   Layer1(前端): 本地五维评分 + 即时BLE停止 → 零延迟安全层
 //   Layer2(服务端): 接收数据 + AI通知 + 日志 → 智能协同层
+
+// === 前置增益放大器（微弱声音增强） ===
+var vPreamp = {
+  gain: 3.0,          // 增益倍数 (1-15)
+  noiseFloor: 3,      // 噪声底（环境底噪 RMS×300）
+  autoCal: true,      // 自动校准开关
+  // 自动校准状态
+  _calSamples: [],    // 校准采样
+  _calibrating: false,
+  _voicePeak: 0,      // 记录用户声音峰值
+  _voiceAvg: 0,       // 记录用户平均声音
+  _voiceFrames: 0,    // 声音帧计数
+  _adaptGain: 3.0,    // 自适应增益
+
+  // 核心：将原始RMS转换为增强后的音量
+  process: function(rawRms) {
+    var raw = rawRms * 300;  // 原始 vol
+    // 减去噪声底
+    var cleaned = Math.max(0, raw - this.noiseFloor);
+    // 应用增益
+    var g = this.autoCal ? this._adaptGain : this.gain;
+    var vol = Math.min(100, cleaned * g);
+    // 自动校准：跟踪声音特征
+    if (this.autoCal && raw > this.noiseFloor + 5) {
+      this._voiceFrames++;
+      if (raw > this._voicePeak) this._voicePeak = raw;
+      this._voiceAvg += (raw - this._voiceAvg) * 0.05;
+      // 动态调整增益：目标让平均声音落在 50-70 区间
+      if (this._voiceFrames > 20 && this._voiceAvg > 0) {
+        var target = 60;
+        var needed = target / Math.max(1, this._voiceAvg - this.noiseFloor);
+        this._adaptGain += (needed - this._adaptGain) * 0.02;
+        this._adaptGain = Math.max(1, Math.min(15, this._adaptGain));
+      }
+    }
+    return vol;
+  },
+
+  // 环境校准：采集2秒底噪
+  calibrate: function(analyser, buf, cb) {
+    this._calibrating = true;
+    this._calSamples = [];
+    var self = this;
+    var count = 0;
+    var calTimer = setInterval(function() {
+      analyser.getByteTimeDomainData(buf);
+      var s = 0;
+      for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; s += v * v; }
+      self._calSamples.push(Math.sqrt(s / buf.length) * 300);
+      count++;
+      if (count >= 40) {  // 2秒 (40×50ms)
+        clearInterval(calTimer);
+        var avg = self._calSamples.reduce(function(a,b){return a+b;},0) / self._calSamples.length;
+        self.noiseFloor = Math.max(1, Math.round(avg * 1.2));  // 底噪×1.2作为阈值
+        self._calibrating = false;
+        // 同步音量下限
+        voiceEngine.cfg.volume_floor = self.noiseFloor;
+        if (cb) cb(self.noiseFloor);
+      }
+    }, 50);
+  },
+
+  // 重置自适应状态
+  resetAdapt: function() {
+    this._voicePeak = 0;
+    this._voiceAvg = 0;
+    this._voiceFrames = 0;
+    this._adaptGain = this.gain;
+  }
+};
+
 var voiceEngine = {
   // 配置（与服务端 VoiceConfig 保持一致）
   cfg: {
@@ -353,7 +433,7 @@ var voiceEngine = {
     urgency_window: 10, urgency_max_slope: 8, urgency_decay: 0.92,
     sustain_threshold: 40, sustain_full: 4, sustain_decay: 0.97,
     climax_threshold: 72, climax_hold: 1.2, cooldown: 15,
-    min_frames: 15
+    min_frames: 5
   },
   // 状态
   frames: [],          // {vol, pitch, ts}
@@ -372,6 +452,16 @@ var voiceEngine = {
     this.aboveSince = null; this.totalScore = 0;
     this.dims = {volume:0, pitch:0, density:0, urgency:0, sustain:0};
     this.triggered = false;
+  },
+
+  // 纯计算评分（不修改状态，供模拟模式使用）
+  _score: function(d) {
+    var c = this.cfg;
+    return Math.min(100, (
+      d.volume * c.weight_volume + d.pitch * c.weight_pitch +
+      d.density * c.weight_density + d.urgency * c.weight_urgency +
+      d.sustain * c.weight_sustain
+    ) * 100);
   },
 
   process: function(vol, pitch) {
@@ -436,6 +526,8 @@ var voiceEngine = {
     var c = this.cfg;
     // 冷却期
     if (now - this.lastTrigger < c.cooldown) { this.aboveSince = null; return; }
+    // 人声置信度门控：低于25%认为是环境噪音，不触发
+    if (vSmart.voiceConf < 0.25 && this.totalScore < 90) { this.aboveSince = null; return; }
     if (this.totalScore >= c.climax_threshold) {
       if (!this.aboveSince) this.aboveSince = now;
       if (now - this.aboveSince >= c.climax_hold) this._fire(now);
@@ -450,6 +542,12 @@ var voiceEngine = {
     this.triggered = true;
     this.sustainAccum = 0;
     this.urgencyScore = 0;
+    // 模拟模式：不真正停止设备
+    if (vSimActive) {
+      showToast('🧪 寸止触发！（模拟模式，未停止设备）', 'warn');
+      addLog('warn', '🎤 寸止触发(模拟) 评分=' + Math.round(this.totalScore));
+      return;
+    }
     // ══ Layer1: 前端即时停止（零延迟）══
     if (bleChar) { bleWrite(0, 0, 0); }  // Web Bluetooth 直停
     socket_emit('set_speed', {a:0, b:0, c:0});  // 服务端BLE停
@@ -461,15 +559,108 @@ var voiceEngine = {
       timestamp: now
     });
     showToast('🛑 声音寸止触发！设备已停止', 'err');
-    addLog('err', '🎤 声音寸止触发! 评分=' + Math.round(this.totalScore));
+    addLog('err', '🎤 声音寸止触发! 评分=' + Math.round(this.totalScore) + ' 人声=' + Math.round(vSmart.voiceConf*100) + '%');
+    // 触发闪烁 + 震动反馈
+    var vp = document.getElementById('voicePanel');
+    vp.classList.add('triggered');
+    setTimeout(function() { vp.classList.remove('triggered'); }, 2000);
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
     // 同步停止AI/随机/音频跟随
     if (aiRunning) { socket_emit('stop_ai', {}); aiRunning = false; updateAiUI(); }
     if (typeof randomRunning !== 'undefined' && randomRunning) {
       randomRunning = false;
       var rb = document.getElementById('randomBtn');
-      if (rb) { rb.textContent = '🎲 随机'; rb.style.background = 'var(--orange)'; rb.style.boxShadow = 'none'; }
+      if (rb) { rb.textContent = '🎲 随机'; rb.classList.remove('running'); }
     }
     if (typeof audioReactive !== 'undefined' && audioReactive.running) arStop();
+  }
+};
+
+// === 智能人声识别 + 评分历史 + 预警系统 ===
+var vSmart = {
+  history: [],        // 评分历史 (max 150帧 = 15秒)
+  voiceConf: 0,       // 人声置信度 0-1
+  trend: 0,           // 趋势 (-1下降, 0平稳, 1上升)
+  _prevScores: [],    // 趋势计算用
+  _specHistory: [],   // 频谱历史
+
+  // 人声检测：基于频谱特征
+  analyzeVoice: function(fbuf, sampleRate, fftSize, vol) {
+    if (vol < 5) { this.voiceConf *= 0.9; return this.voiceConf; }
+    // 计算频谱质心
+    var num = 0, den = 0;
+    var binHz = sampleRate / fftSize;
+    for (var i = 2; i < fbuf.length / 2; i++) {
+      var mag = Math.pow(10, fbuf[i] / 20);  // dB→linear
+      num += i * binHz * mag;
+      den += mag;
+    }
+    var centroid = den > 0 ? num / den : 0;
+    // 人声特征：基频80-1000Hz，频谱质心200-3000Hz
+    var inVoiceRange = (centroid > 150 && centroid < 3500) ? 1 : 0;
+    // 频谱平坦度（噪音更平坦，人声有峰值）
+    var geoSum = 0, ariSum = 0, n = 0;
+    for (var i = 2; i < fbuf.length / 4; i++) {
+      var mag = Math.pow(10, fbuf[i] / 20);
+      geoSum += Math.log(mag + 1e-10);
+      ariSum += mag;
+      n++;
+    }
+    var flatness = n > 0 ? Math.exp(geoSum / n) / (ariSum / n + 1e-10) : 1;
+    var isVoiceLike = flatness < 0.3 ? 1 : flatness < 0.5 ? 0.5 : 0;
+    // 综合置信度
+    var conf = inVoiceRange * 0.6 + isVoiceLike * 0.4;
+    // 平滑
+    this.voiceConf += (conf - this.voiceConf) * 0.15;
+    return this.voiceConf;
+  },
+
+  // 更新历史和趋势
+  update: function(score) {
+    this.history.push(score);
+    if (this.history.length > 150) this.history.shift();
+    // 趋势：最近5帧vs前5帧
+    this._prevScores.push(score);
+    if (this._prevScores.length > 10) this._prevScores.shift();
+    if (this._prevScores.length >= 10) {
+      var recent = this._prevScores.slice(-5).reduce(function(a,b){return a+b;},0) / 5;
+      var prev = this._prevScores.slice(0, 5).reduce(function(a,b){return a+b;},0) / 5;
+      this.trend = recent - prev > 3 ? 1 : recent - prev < -3 ? -1 : 0;
+    }
+  },
+
+  // 绘制评分历史曲线
+  drawSpark: function(canvas) {
+    if (!canvas || this.history.length < 2) return;
+    var c = canvas.getContext('2d');
+    var w = canvas.width = canvas.offsetWidth;
+    var h = canvas.height;
+    c.clearRect(0, 0, w, h);
+    // 阈值线
+    var thY = h - (voiceEngine.cfg.climax_threshold / 100) * h;
+    c.strokeStyle = 'rgba(239,68,68,0.3)';
+    c.setLineDash([3, 3]);
+    c.beginPath(); c.moveTo(0, thY); c.lineTo(w, thY); c.stroke();
+    c.setLineDash([]);
+    // 评分曲线
+    var len = this.history.length;
+    var step = w / 149;
+    c.beginPath();
+    for (var i = 0; i < len; i++) {
+      var x = (150 - len + i) * step;
+      var y = h - (this.history[i] / 100) * h;
+      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    var lastScore = this.history[len - 1];
+    c.strokeStyle = lastScore > 72 ? '#ef4444' : lastScore > 50 ? '#f59e0b' : '#22c55e';
+    c.lineWidth = 1.5;
+    c.stroke();
+    // 填充渐变
+    c.lineTo((150 - 1) * step, h);
+    c.lineTo((150 - len) * step, h);
+    c.closePath();
+    c.fillStyle = lastScore > 72 ? 'rgba(239,68,68,0.1)' : lastScore > 50 ? 'rgba(245,158,11,0.08)' : 'rgba(34,197,94,0.06)';
+    c.fill();
   }
 };
 
@@ -483,31 +674,81 @@ async function toggleMic() {
     document.getElementById('micBtn').classList.remove('active');
     document.getElementById('micBtn').textContent = '🎤';
     document.getElementById('micMeter').style.width = '0%';
-    document.getElementById('voicePanel').style.display = 'none';
-    showToast('🎤 监听已关闭', 'warn');
+    var mtb = document.getElementById('micToggleBtn');
+    if (mtb) { mtb.textContent = '开启'; mtb.className = 'btn btn-sm btn-g'; }
+    var vs = document.getElementById('vStatus');
+    if (vSimActive) {
+      // 模拟仍开 → 降级为纯演示模式
+      vs.textContent = '🧪 模拟演示'; vs.style.color = 'var(--orange)';
+      vSimPhase = 0; voiceEngine.reset();
+      vSimTimer = setInterval(function() {
+        vSimPhase += 0.1;
+        var base = Math.min(1, vSimPhase / 8);
+        var wave = Math.sin(vSimPhase * 2) * 0.15;
+        var vol = Math.min(1, base * 0.9 + wave + Math.random() * 0.1);
+        var pitch = Math.min(1, base * 0.6 + Math.sin(vSimPhase * 3) * 0.2 + Math.random() * 0.08);
+        var density = Math.min(1, base * 0.7 + Math.random() * 0.15);
+        var urgency = Math.min(1, base * 0.8 + wave * 0.5 + Math.random() * 0.1);
+        var sustain = Math.min(1, vSimPhase / 12);
+        var dims = {volume: vol, pitch: pitch, density: density, urgency: urgency, sustain: sustain};
+        var score = voiceEngine._score(dims);
+        document.getElementById('voiceScoreBar').style.width = score + '%';
+        document.getElementById('voiceScoreText').textContent = Math.round(score);
+        document.getElementById('vBarVol').style.height = (vol * 100) + '%';
+        document.getElementById('vBarPitch').style.height = (pitch * 100) + '%';
+        document.getElementById('vBarDensity').style.height = (density * 100) + '%';
+        document.getElementById('vBarUrgency').style.height = (urgency * 100) + '%';
+        document.getElementById('vBarSustain').style.height = (sustain * 100) + '%';
+        if (vSimPhase > 15) { vSimPhase = 0; voiceEngine.reset(); }
+      }, 100);
+      showToast('🎤 麦克风已关，模拟演示继续', 'info');
+    } else {
+      document.getElementById('voiceDetail').style.display = 'none';
+      vs.textContent = '○ 未开启'; vs.style.color = 'var(--dim)';
+      showToast('🎤 监听已关闭', 'warn');
+    }
     return;
   }
   try {
+    // AudioContext必须在用户手势内创建（某些浏览器要求）
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
     micStream = await navigator.mediaDevices.getUserMedia({audio: true});
-    var ctx = new AudioContext();
     var src = ctx.createMediaStreamSource(micStream);
     micAnalyser = ctx.createAnalyser();
     micAnalyser.fftSize = 2048;
+    micAnalyser.smoothingTimeConstant = 0.75;
     src.connect(micAnalyser);
     micActive = true;
     voiceEngine.reset();
+    console.log('[VoiceEngine] Mic started, ctx.state=' + ctx.state + ', sampleRate=' + ctx.sampleRate);
     document.getElementById('micBtn').classList.add('active');
     document.getElementById('micBtn').textContent = '🎤●';
-    document.getElementById('voicePanel').style.display = 'block';
-    showToast('🎤 声纹监听已开启（本地引擎）', 'ok');
+    document.getElementById('voiceDetail').style.display = 'block';
+    var mtb = document.getElementById('micToggleBtn');
+    if (mtb) { mtb.textContent = '关闭'; mtb.className = 'btn btn-sm btn-d'; }
+    var vs = document.getElementById('vStatus');
+    if (vSimActive) {
+      clearInterval(vSimTimer);
+      vs.textContent = '● 监听中(安全)'; vs.style.color = 'var(--orange)';
+      showToast('🎤 真实监听已开启（安全模式，触发不停设备）', 'ok');
+    } else {
+      vs.textContent = '● 监听中'; vs.style.color = 'var(--green)';
+      showToast('🎤 声纹监听已开启（本地引擎）', 'ok');
+    }
     var buf = new Uint8Array(micAnalyser.frequencyBinCount);
     var fbuf = new Float32Array(micAnalyser.frequencyBinCount);
+    var _dbgCount = 0;
     micInterval = setInterval(function() {
       if (!micActive) return;
       micAnalyser.getByteTimeDomainData(buf);
       var s = 0;
       for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; s += v * v; }
-      var vol = Math.min(100, Math.sqrt(s / buf.length) * 300);
+      var rawRms = Math.sqrt(s / buf.length);
+      // 增益放大 + 噪声底减除 + 自适应
+      var vol = vPreamp.process(rawRms);
+      // 调试：前20帧打印
+      if (_dbgCount < 20) { console.log('[VoiceEngine] frame=' + _dbgCount + ' raw=' + (rawRms*300).toFixed(1) + ' vol=' + vol.toFixed(1) + ' gain=' + (vPreamp.autoCal ? vPreamp._adaptGain : vPreamp.gain).toFixed(1)); _dbgCount++; }
       micAnalyser.getFloatFrequencyData(fbuf);
       var mx = -Infinity, mi = 0;
       for (var i = 2; i < fbuf.length / 2; i++) { if (fbuf[i] > mx) { mx = fbuf[i]; mi = i; } }
@@ -523,6 +764,8 @@ async function toggleMic() {
       document.getElementById('micMeter').style.width = vol + '%';
       document.getElementById('micMeter').style.background = vol > 70 ? 'var(--red)' : vol > 40 ? 'var(--orange)' : 'var(--green)';
       // 寸止面板
+      var rawEl = document.getElementById('vRawVol');
+      if (rawEl) { rawEl.textContent = Math.round(vol); rawEl.style.color = vol > 40 ? 'var(--orange)' : vol > 10 ? 'var(--green)' : 'var(--dim)'; }
       var score = voiceEngine.totalScore;
       document.getElementById('voiceScoreBar').style.width = score + '%';
       document.getElementById('voiceScoreText').textContent = Math.round(score);
@@ -532,25 +775,273 @@ async function toggleMic() {
       document.getElementById('vDimDensity').textContent = Math.round(d.density * 100);
       document.getElementById('vDimUrgency').textContent = Math.round(d.urgency * 100);
       document.getElementById('vDimSustain').textContent = Math.round(d.sustain * 100);
+      // 五维可视化柱
+      document.getElementById('vBarVol').style.height = (d.volume * 100) + '%';
+      document.getElementById('vBarPitch').style.height = (d.pitch * 100) + '%';
+      document.getElementById('vBarDensity').style.height = (d.density * 100) + '%';
+      document.getElementById('vBarUrgency').style.height = (d.urgency * 100) + '%';
+      document.getElementById('vBarSustain').style.height = (d.sustain * 100) + '%';
       document.getElementById('vEvents').textContent = voiceEngine.vocalEvents.length;
       document.getElementById('vSustain').textContent = voiceEngine.sustainAccum.toFixed(1) + 's';
+
+      // ══ 智能识别 + 预警 + 历史曲线 ══
+      var conf = vSmart.analyzeVoice(fbuf, ctx.sampleRate, micAnalyser.fftSize, vol);
+      vSmart.update(score);
+      vSmart.drawSpark(document.getElementById('vSparkline'));
+      // 人声置信度显示
+      var confPct = Math.round(conf * 100);
+      var dotEl = document.getElementById('vVoiceDot');
+      var confEl = document.getElementById('vVoiceConf');
+      if (confEl) confEl.textContent = '人声 ' + confPct + '%';
+      if (dotEl) dotEl.style.background = confPct > 60 ? 'var(--green)' : confPct > 30 ? 'var(--orange)' : 'var(--dim)';
+      // 趋势指示
+      var trendEl = document.getElementById('vTrend');
+      if (trendEl) {
+        if (vSmart.trend > 0) { trendEl.textContent = '↑ 上升趋势'; trendEl.style.color = 'var(--red)'; }
+        else if (vSmart.trend < 0) { trendEl.textContent = '↓ 下降趋势'; trendEl.style.color = 'var(--green)'; }
+        else { trendEl.textContent = '— 平稳'; trendEl.style.color = 'var(--dim)'; }
+      }
+      // 预警进度条
+      var warnBar = document.getElementById('vWarnBar');
+      if (warnBar) {
+        var pct = Math.min(100, (score / voiceEngine.cfg.climax_threshold) * 100);
+        warnBar.style.width = pct + '%';
+        warnBar.style.background = pct > 90 ? 'var(--red)' : pct > 60 ? 'var(--orange)' : 'var(--green)';
+      }
+      // 面板预警等级
+      var panel = document.getElementById('voicePanel');
+      panel.classList.remove('warning', 'critical', 'triggered');
+      if (voiceEngine.aboveSince) {
+        panel.classList.add('critical');
+      } else if (score > 50) {
+        panel.classList.add('warning');
+      }
+
+      // 状态文字
       var statusEl = document.getElementById('vStatus');
       var coolRemain = voiceEngine.cfg.cooldown - (Date.now()/1000 - voiceEngine.lastTrigger);
       if (coolRemain > 0 && voiceEngine.lastTrigger > 0) {
         statusEl.textContent = '❄ 冷却 ' + Math.ceil(coolRemain) + 's';
         statusEl.style.color = 'var(--blue)';
       } else if (voiceEngine.aboveSince) {
-        statusEl.textContent = '⚠ 接近临界!';
+        var holdLeft = voiceEngine.cfg.climax_hold - (Date.now()/1000 - voiceEngine.aboveSince);
+        statusEl.textContent = '🚨 临界 ' + Math.max(0, holdLeft).toFixed(1) + 's';
         statusEl.style.color = 'var(--red)';
       } else if (score > 50) {
-        statusEl.textContent = '● 强度上升';
+        statusEl.textContent = vSimActive ? '⚠ 接近(安全)' : '⚠ 接近临界';
         statusEl.style.color = 'var(--orange)';
       } else {
-        statusEl.textContent = '● 监听中';
-        statusEl.style.color = 'var(--green)';
+        statusEl.textContent = vSimActive ? '● 监听(安全)' : '● 监听中';
+        statusEl.style.color = vSimActive ? 'var(--orange)' : 'var(--green)';
       }
     }, 100);
   } catch(e) { showToast('麦克风权限拒绝', 'err'); }
+}
+
+// === 声音寸止：模拟测试模式 ===
+var vSimActive = false, vSimTimer = null, vSimPhase = 0;
+function vToggleSim() {
+  var btn = document.getElementById('vSimBtn');
+  var vs = document.getElementById('vStatus');
+
+  // ── 关闭模拟 ──
+  if (vSimActive) {
+    vSimActive = false;
+    btn.textContent = '模拟'; btn.classList.remove('running');
+    if (micActive) {
+      // 麦克风仍开着 → 回到真实生产模式
+      vs.textContent = '● 监听中'; vs.style.color = 'var(--green)';
+      showToast('🎤 已切换回真实模式（触发将停止设备）', 'ok');
+    } else {
+      // 纯演示模式关闭
+      clearInterval(vSimTimer);
+      document.getElementById('voiceDetail').style.display = 'none';
+      vs.textContent = '○ 未开启'; vs.style.color = 'var(--dim)';
+    }
+    return;
+  }
+
+  // ── 开启模拟 ──
+  vSimActive = true;
+  btn.textContent = '停止模拟'; btn.classList.add('running');
+
+  if (micActive) {
+    // 麦克风已开 → 真实声音+安全模式（触发不停设备）
+    vs.textContent = '● 监听中(安全)'; vs.style.color = 'var(--orange)';
+    showToast('🧪 安全模式：真实监听，触发不停设备', 'info');
+  } else {
+    // 麦克风未开 → 纯虚拟数据演示
+    vSimPhase = 0;
+    document.getElementById('voiceDetail').style.display = 'block';
+    voiceEngine.reset();
+    vs.textContent = '🧪 模拟演示'; vs.style.color = 'var(--orange)';
+    showToast('🧪 纯模拟演示（虚拟数据，不停设备）', 'info');
+    vSimTimer = setInterval(function() {
+      vSimPhase += 0.1;
+      var base = Math.min(1, vSimPhase / 8);
+      var wave = Math.sin(vSimPhase * 2) * 0.15;
+      var vol = Math.min(1, base * 0.9 + wave + Math.random() * 0.1);
+      var pitch = Math.min(1, base * 0.6 + Math.sin(vSimPhase * 3) * 0.2 + Math.random() * 0.08);
+      var density = Math.min(1, base * 0.7 + Math.random() * 0.15);
+      var urgency = Math.min(1, base * 0.8 + wave * 0.5 + Math.random() * 0.1);
+      var sustain = Math.min(1, vSimPhase / 12);
+      var dims = {volume: vol, pitch: pitch, density: density, urgency: urgency, sustain: sustain};
+      var score = voiceEngine._score(dims);
+      document.getElementById('voiceScoreBar').style.width = score + '%';
+      document.getElementById('voiceScoreText').textContent = Math.round(score);
+      document.getElementById('vDimVol').textContent = Math.round(vol * 100);
+      document.getElementById('vDimPitch').textContent = Math.round(pitch * 100);
+      document.getElementById('vDimDensity').textContent = Math.round(density * 100);
+      document.getElementById('vDimUrgency').textContent = Math.round(urgency * 100);
+      document.getElementById('vDimSustain').textContent = Math.round(sustain * 100);
+      document.getElementById('vBarVol').style.height = (vol * 100) + '%';
+      document.getElementById('vBarPitch').style.height = (pitch * 100) + '%';
+      document.getElementById('vBarDensity').style.height = (density * 100) + '%';
+      document.getElementById('vBarUrgency').style.height = (urgency * 100) + '%';
+      document.getElementById('vBarSustain').style.height = (sustain * 100) + '%';
+      document.getElementById('vEvents').textContent = Math.floor(vSimPhase / 1.5);
+      document.getElementById('vSustain').textContent = (vSimPhase * 0.1).toFixed(1) + 's';
+      var st = document.getElementById('vStatus');
+      if (score >= voiceEngine.cfg.climax_threshold) {
+        st.textContent = '🚨 触发寸止(模拟)!'; st.style.color = 'var(--red)';
+      } else if (score > 50) {
+        st.textContent = '⚠ 接近临界'; st.style.color = 'var(--orange)';
+      } else {
+        st.textContent = '🧪 模拟演示'; st.style.color = 'var(--orange)';
+      }
+      if (vSimPhase > 15) { vSimPhase = 0; voiceEngine.reset(); }
+    }, 100);
+  }
+}
+
+// === 声音寸止：灵敏度滑条映射 ===
+function vSensitivityChange(val) {
+  document.getElementById('vSensitivityOut').textContent = val;
+  var threshold = Math.round(90 - (val - 1) * (40 / 9));
+  voiceEngine.cfg.climax_threshold = threshold;
+  var el = document.getElementById('vCfgThreshold');
+  if (el) el.value = threshold;
+  var hold = Math.max(0.5, 2.0 - val * 0.15);
+  voiceEngine.cfg.climax_hold = Math.round(hold * 10) / 10;
+  var hel = document.getElementById('vCfgHold');
+  if (hel) hel.value = voiceEngine.cfg.climax_hold;
+}
+
+// === 声音寸止：增益调节 ===
+function vGainChange(val) {
+  vPreamp.gain = parseFloat(val);
+  vPreamp._adaptGain = parseFloat(val);
+  document.getElementById('vGainOut').textContent = val + 'x';
+}
+
+// === 声音寸止：环境校准 ===
+function vCalibrate() {
+  var msg = document.getElementById('vCalMsg');
+  var btn = document.getElementById('vCalBtn');
+  if (!micActive || !micAnalyser) {
+    msg.textContent = '⚠️ 请先开启麦克风';
+    msg.style.color = 'var(--red)';
+    return;
+  }
+  if (vPreamp._calibrating) return;
+  btn.textContent = '🎯 校准中...';
+  msg.textContent = '🔇 请保持安静（2秒）...';
+  msg.style.color = 'var(--orange)';
+  var buf = new Uint8Array(micAnalyser.frequencyBinCount);
+  vPreamp.calibrate(micAnalyser, buf, function(floor) {
+    btn.textContent = '🎯 校准环境';
+    msg.textContent = '✅ 噪声底=' + floor + ' 已自动减除（微弱声音将被放大）';
+    msg.style.color = 'var(--green)';
+    vPreamp.resetAdapt();
+    showToast('🎯 环境校准完成: 噪声底=' + floor, 'ok');
+  });
+}
+
+// === 声音寸止：自动校准开关 ===
+function vAutoCalToggle() {
+  vPreamp.autoCal = !vPreamp.autoCal;
+  var btn = document.getElementById('vAutoCalBtn');
+  var msg = document.getElementById('vCalMsg');
+  if (vPreamp.autoCal) {
+    btn.textContent = '🔄 自动:开';
+    btn.style.borderColor = 'var(--green)';
+    btn.style.color = 'var(--green)';
+    vPreamp.resetAdapt();
+    msg.textContent = '🔄 自动增益已开启，将根据你的声音自动调整';
+    msg.style.color = 'var(--green)';
+  } else {
+    btn.textContent = '🔄 自动:关';
+    btn.style.borderColor = '';
+    btn.style.color = '';
+    msg.textContent = '🔒 固定增益 ' + vPreamp.gain + 'x（可手动调节滑条）';
+    msg.style.color = 'var(--dim)';
+  }
+}
+
+// === 声音寸止：AI自动调参 ===
+function vAiTune() {
+  var msg = document.getElementById('vCalMsg');
+  msg.textContent = '分析环境...';
+  if (micActive && micAnalyser) {
+    var samples = [], buf = new Uint8Array(micAnalyser.frequencyBinCount);
+    var collect = setInterval(function() {
+      micAnalyser.getByteTimeDomainData(buf);
+      var s = 0;
+      for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; s += v * v; }
+      samples.push(Math.sqrt(s / buf.length) * 300);
+    }, 50);
+    setTimeout(function() {
+      clearInterval(collect);
+      var avg = samples.reduce(function(a, b) { return a + b; }, 0) / samples.length;
+      var peak = Math.max.apply(null, samples);
+      applyAiTune(avg, peak, msg);
+    }, 2000);
+  } else {
+    setTimeout(function() { applyAiTune(8, 25, msg); }, 800);
+  }
+}
+function applyAiTune(ambientAvg, ambientPeak, msgEl) {
+  var cfg = voiceEngine.cfg;
+  if (ambientAvg > 20) {
+    cfg.climax_threshold = 80;
+    cfg.volume_peak = Math.min(100, Math.round(ambientPeak * 1.8));
+    cfg.climax_hold = 1.8;
+    cfg.volume_floor = Math.round(ambientAvg * 0.8);
+    msgEl.textContent = '✅ 嘵杂环境: 阈值80';
+  } else if (ambientAvg > 10) {
+    cfg.climax_threshold = 72;
+    cfg.volume_peak = 60;
+    cfg.climax_hold = 1.2;
+    cfg.volume_floor = 5;
+    msgEl.textContent = '✅ 标准环境: 阈值72';
+  } else {
+    cfg.climax_threshold = 62;
+    cfg.volume_peak = 40;
+    cfg.climax_hold = 0.8;
+    cfg.volume_floor = 3;
+    msgEl.textContent = '✅ 安静环境: 阈值62';
+  }
+  document.getElementById('vCfgThreshold').value = cfg.climax_threshold;
+  document.getElementById('vCfgVolPeak').value = cfg.volume_peak;
+  document.getElementById('vCfgHold').value = cfg.climax_hold;
+  document.getElementById('vCfgVolFloor').value = cfg.volume_floor;
+  var sens = Math.round((90 - cfg.climax_threshold) / (40 / 9) * 2 + 2) / 2;
+  document.getElementById('vSensitivity').value = sens;
+  document.getElementById('vSensitivityOut').textContent = sens;
+  showToast('🪄 AI调参完成: ' + msgEl.textContent.replace('✅ ', ''), 'ok');
+}
+
+// === 声音寸止：高级设置折叠 ===
+function vToggleAdv() {
+  var panel = document.getElementById('vAdvPanel');
+  var btn = document.getElementById('vAdvToggle');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    btn.textContent = '⚙️ 收起';
+  } else {
+    panel.style.display = 'none';
+    btn.textContent = '⚙️ 高级';
+  }
 }
 
 // 服务端寸止事件回显（备用，当服务端先触发时）
@@ -595,12 +1086,22 @@ function updateSpeedBars(a, b, c) {
   var bars = document.querySelectorAll('.speed-bar');
   if (bars.length >= 3) { bars[0].style.height = (a/40*100)+'%'; bars[1].style.height = (b/20*100)+'%'; bars[2].style.height = (c/20*100)+'%'; }
 }
+function updateChannelMeters(a, b, c) {
+  var fA = document.getElementById('chFillA'), fB = document.getElementById('chFillB'), fC = document.getElementById('chFillC');
+  var vA = document.getElementById('chValA'), vB = document.getElementById('chValB'), vC = document.getElementById('chValC');
+  if (fA) fA.style.width = (a/40*100)+'%';
+  if (fB) fB.style.width = (b/20*100)+'%';
+  if (fC) fC.style.width = (c/20*100)+'%';
+  if (vA) vA.textContent = a;
+  if (vB) vB.textContent = b;
+  if (vC) vC.textContent = c;
+}
 function sendFeedback(p) {
   buttonFeedback(document.getElementById(p ? 'fbGood' : 'fbBad'));
   lastFeedback = p;
   socket_emit('ai_feedback', {positive: p});
-  document.querySelectorAll('.fb-btn').forEach(function(b) { b.classList.remove('selected'); });
-  document.getElementById(p ? 'fbGood' : 'fbBad').classList.add('selected');
+  document.querySelectorAll('.fb-btn').forEach(function(b) { b.classList.remove('sel'); });
+  document.getElementById(p ? 'fbGood' : 'fbBad').classList.add('sel');
   document.getElementById('fbDisplay').textContent = p ? '👍' : '👎';
   showToast(p ? '👍 享受' : '👎 抗拒', p ? 'ok' : 'warn');
 }
@@ -706,7 +1207,7 @@ function drawChart() {
 }
 
 // --- Personality Editor ---
-function toggleEditor() { switchTab('tabPattern'); }
+function toggleEditor() { switchTab('tabAI'); }
 async function loadPersonalityForEdit() {
   var pid = document.getElementById('editPersonality').value;
   if (!pid) return;
@@ -738,12 +1239,16 @@ async function createPersonality() {
 async function loadEditorList() {
   try { var r = await fetch('/api/personalities'); var data = await r.json(); var sel = document.getElementById('editPersonality'); sel.innerHTML = '<option value="">选择人格...</option>' + data.map(function(p) { return '<option value="'+p.id+'">'+p.emoji+' '+p.name+'</option>'; }).join(''); } catch(e) {}
 }
-// Initialization (run once)
-loadPersonalities();
-loadEditorList();
-setTimeout(initChart, 500);
-selectPattern('random');
-addLog('info', '控制面板就绪');
+// Initialization deferred until DOM ready
+document.addEventListener('DOMContentLoaded', function() {
+  loadPersonalities();
+  loadEditorList();
+  setTimeout(initChart, 300);
+  selectPattern('random');
+  addLog('info', '控制面板就绪');
+  arInit();
+  loadSettings();
+});
 
 
 // ─── Random Toggle ──────────────────────────────────
@@ -759,8 +1264,7 @@ function toggleRandom() {
     aiRunning = false;
     updateAiUI();
     btn.textContent = '🎲 随机';
-    btn.style.background = 'var(--orange)';
-    btn.style.boxShadow = 'none';
+    btn.classList.remove('running');
     showToast('🎲 已停止（设备+AI）', 'warn');
     addChatBubble('🎲 随机模式已关闭，设备和AI已停止', false);
   } else {
@@ -769,9 +1273,8 @@ function toggleRandom() {
     var rMax = parseInt(document.getElementById('randIntervalMax').value) || 6;
     socket_emit('start_random', {interval: [rMin, rMax], rest_chance: restC / 100});
     randomRunning = true;
-    btn.textContent = '🎲 停止中';
-    btn.style.background = 'var(--red)';
-    btn.style.boxShadow = '0 0 10px rgba(239,68,68,0.5)';
+    btn.textContent = '⏹ 停止';
+    btn.classList.add('running');
     showToast('🎲 随机启动', 'ok');
   }
 }
@@ -796,7 +1299,7 @@ emergencyStop = function() {
       aiRunning = false; randomRunning = false;
       updateAiUI();
       var btn = document.getElementById('randomBtn');
-      if (btn) { btn.textContent = '🎲 随机'; btn.style.background = 'var(--orange)'; btn.style.boxShadow = 'none'; }
+      if (btn) { btn.textContent = '🎲 随机'; btn.classList.remove('running'); }
       showToast('🛑 永久停止 - 再按恢复', 'err');
     } else {
       // N秒 = 立即停，等N秒后自动恢复
@@ -835,19 +1338,28 @@ async function saveSettings() {
   var key = document.getElementById('setApiKey').value;
   var url = document.getElementById('setBaseUrl').value;
   var model = document.getElementById('setModel').value;
-  var name = document.getElementById('setDeviceName').value;
   if (key) data.AI_API_KEY = key;
   if (url) data.AI_BASE_URL = url;
   if (model) data.AI_MODEL = model;
+  try {
+    var r = await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+    var d = await r.json();
+    document.getElementById('settingsMsg').textContent = d.message || '✅ 已保存';
+    showToast('💾 AI模型设置已保存', 'ok');
+  } catch(e) { showToast('保存失败', 'err'); }
+}
+async function saveDeviceSettings() {
+  var data = {};
+  var name = document.getElementById('setDeviceName').value;
   if (name) data.BLE_DEVICE_NAME = name;
   try {
     var r = await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
     var d = await r.json();
-    document.getElementById('settingsMsg').textContent = d.message || '已保存';
-    showToast('💾 设置已保存，重启服务生效', 'ok');
+    document.getElementById('deviceSettingsMsg').textContent = d.message || '✅ 已保存';
+    showToast('💾 设备设置已保存', 'ok');
   } catch(e) { showToast('保存失败', 'err'); }
 }
-loadSettings();
+// loadSettings() called in DOMContentLoaded
 
 // ─── Audio Reactive Controller ─────────────────────
 // 音频响应模式：分析视频/屏幕声音响度，实时映射到 A/B/C 通道
@@ -1131,4 +1643,99 @@ function arInit() {
   });
   arUpdateOutputs();
 }
-arInit();
+// arInit() called in DOMContentLoaded
+
+// ─── Collapse Toggle ───────────────────────────────
+function toggleCollapse(hdr) {
+  hdr.classList.toggle('open');
+  var body = hdr.nextElementSibling;
+  if (body) body.classList.toggle('open');
+}
+
+// ─── Audio Simple/Advanced Mode ────────────────────
+var arPresets = {
+  gentle: { gain:3.0, lowBoost:0.65, minIntensity:0.03, attack:0.30, release:0.08, maxA:10, maxB:5, maxC:7, weightA:0.6, weightB:0.3, weightC:0.8, noiseFloor:0.008, silentStop:1.5, writeHz:5 },
+  standard: { gain:6.0, lowBoost:0.45, minIntensity:0.06, attack:0.45, release:0.12, maxA:18, maxB:8, maxC:12, weightA:0.7, weightB:0.35, weightC:1.0, noiseFloor:0.006, silentStop:1.2, writeHz:6 },
+  intense: { gain:12.0, lowBoost:0.30, minIntensity:0.10, attack:0.70, release:0.20, maxA:30, maxB:14, maxC:18, weightA:0.85, weightB:0.5, weightC:1.0, noiseFloor:0.004, silentStop:0.8, writeHz:8 }
+};
+
+function arSetMode(mode) {
+  var simple = document.getElementById('arSimplePanel');
+  var adv = document.getElementById('arAdvancedPanel');
+  var btnS = document.getElementById('arModeSimple');
+  var btnA = document.getElementById('arModeAdvanced');
+  if (mode === 'advanced') {
+    simple.style.display = 'none';
+    adv.classList.add('show');
+    btnS.classList.remove('active');
+    btnA.classList.add('active');
+  } else {
+    simple.style.display = 'block';
+    adv.classList.remove('show');
+    btnS.classList.add('active');
+    btnA.classList.remove('active');
+  }
+}
+
+function arApplyPreset(name) {
+  var p = arPresets[name];
+  if (!p) return;
+  var map = {
+    arNoiseFloor: p.noiseFloor, arGain: p.gain, arLowBoost: p.lowBoost,
+    arMinIntensity: p.minIntensity, arAttack: p.attack, arRelease: p.release,
+    arWriteHz: p.writeHz, arSilentStop: p.silentStop,
+    arMaxA: p.maxA, arMaxB: p.maxB, arMaxC: p.maxC,
+    arWeightA: p.weightA, arWeightB: p.weightB, arWeightC: p.weightC
+  };
+  Object.keys(map).forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.value = String(map[id]);
+  });
+  arUpdateOutputs();
+  // 同步灵敏度滑条（根据增益反算）
+  var sens = Math.round(Math.min(10, Math.max(1, p.gain / 2.4)) * 2) / 2;
+  document.getElementById('arSensitivity').value = sens;
+  document.getElementById('arSensitivityOut').textContent = sens;
+  showToast('✅ 已应用预设: ' + document.getElementById('arPreset').selectedOptions[0].text, 'ok');
+}
+
+function arSensitivityChange(val) {
+  document.getElementById('arSensitivityOut').textContent = val;
+  // 灵敏度 1-10 映射到增益 1.2-24
+  var gain = 1.2 + (val - 1) * (24 - 1.2) / 9;
+  document.getElementById('arGain').value = gain.toFixed(1);
+  // 灵敏度越高，弱声增强越大，最低强度越小
+  var lowBoost = 0.7 - (val - 1) * 0.05;
+  var minInt = 0.12 - (val - 1) * 0.01;
+  document.getElementById('arLowBoost').value = Math.max(0.2, lowBoost).toFixed(2);
+  document.getElementById('arMinIntensity').value = Math.max(0.02, minInt).toFixed(2);
+  arUpdateOutputs();
+}
+
+function arAiRecommend() {
+  // TODO: 后端接口 /api/ai-recommend-params，根据人格+历史数据返回建议参数
+  showToast('🪄 AI分析中...', 'info');
+  fetch('/api/cmd', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cmd: 'ai_recommend_params', args: {personality: document.getElementById('aiPersonality').value}})
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.params) {
+      // 服务端返回了参数，填入
+      var map = d.params;
+      Object.keys(map).forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.value = String(map[id]);
+      });
+      arUpdateOutputs();
+      showToast('🪄 AI推荐参数已应用', 'ok');
+    } else {
+      // 后端未实现，使用本地默认推荐
+      arApplyPreset('standard');
+      showToast('🪄 已应用标准推荐（AI服务未连接）', 'info');
+    }
+  }).catch(function() {
+    arApplyPreset('standard');
+    showToast('🪄 已应用标准推荐（离线模式）', 'info');
+  });
+}
