@@ -58,7 +58,7 @@ var darkMode = true;
 var bleDevice = null, bleChar = null, bleConfig = null;
 var lastFeedback = null;
 var recording = false, recordedSteps = [], recStartTime = 0;
-var micActive = false, micStream = null, micAnalyser = null, micInterval = null;
+var micActive = false, micStream = null, micAnalyser = null, micInterval = null, micCtx = null;
 var voiceRecorder = null, voiceChunks = [];
 var chartCtx = null;
 
@@ -710,18 +710,20 @@ async function toggleMic() {
     return;
   }
   try {
-    // AudioContext必须在用户手势内创建（某些浏览器要求）
-    var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') await ctx.resume();
+    // AudioContext复用（避免反复创建泄漏）
+    if (!micCtx || micCtx.state === 'closed') {
+      micCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (micCtx.state === 'suspended') await micCtx.resume();
     micStream = await navigator.mediaDevices.getUserMedia({audio: true});
-    var src = ctx.createMediaStreamSource(micStream);
-    micAnalyser = ctx.createAnalyser();
+    var src = micCtx.createMediaStreamSource(micStream);
+    micAnalyser = micCtx.createAnalyser();
     micAnalyser.fftSize = 2048;
     micAnalyser.smoothingTimeConstant = 0.75;
     src.connect(micAnalyser);
     micActive = true;
     voiceEngine.reset();
-    console.log('[VoiceEngine] Mic started, ctx.state=' + ctx.state + ', sampleRate=' + ctx.sampleRate);
+    console.log('[VoiceEngine] Mic started, ctx.state=' + micCtx.state + ', sampleRate=' + micCtx.sampleRate);
     document.getElementById('micBtn').classList.add('active');
     document.getElementById('micBtn').textContent = '🎤●';
     document.getElementById('voiceDetail').style.display = 'block';
@@ -752,7 +754,7 @@ async function toggleMic() {
       micAnalyser.getFloatFrequencyData(fbuf);
       var mx = -Infinity, mi = 0;
       for (var i = 2; i < fbuf.length / 2; i++) { if (fbuf[i] > mx) { mx = fbuf[i]; mi = i; } }
-      var pitch = mi * ctx.sampleRate / micAnalyser.fftSize;
+      var pitch = mi * micCtx.sampleRate / micAnalyser.fftSize;
 
       // ══ Layer1: 本地实时分析 + 判定 ══
       voiceEngine.process(vol, pitch);
@@ -785,7 +787,7 @@ async function toggleMic() {
       document.getElementById('vSustain').textContent = voiceEngine.sustainAccum.toFixed(1) + 's';
 
       // ══ 智能识别 + 预警 + 历史曲线 ══
-      var conf = vSmart.analyzeVoice(fbuf, ctx.sampleRate, micAnalyser.fftSize, vol);
+      var conf = vSmart.analyzeVoice(fbuf, micCtx.sampleRate, micAnalyser.fftSize, vol);
       vSmart.update(score);
       vSmart.drawSpark(document.getElementById('vSparkline'));
       // 人声置信度显示
@@ -810,11 +812,13 @@ async function toggleMic() {
       }
       // 面板预警等级
       var panel = document.getElementById('voicePanel');
-      panel.classList.remove('warning', 'critical', 'triggered');
-      if (voiceEngine.aboveSince) {
-        panel.classList.add('critical');
-      } else if (score > 50) {
-        panel.classList.add('warning');
+      if (!panel.classList.contains('triggered')) {
+        panel.classList.remove('warning', 'critical');
+        if (voiceEngine.aboveSince) {
+          panel.classList.add('critical');
+        } else if (score > 50) {
+          panel.classList.add('warning');
+        }
       }
 
       // 状态文字
@@ -985,6 +989,7 @@ function vAiTune() {
   if (micActive && micAnalyser) {
     var samples = [], buf = new Uint8Array(micAnalyser.frequencyBinCount);
     var collect = setInterval(function() {
+      if (!micAnalyser) { clearInterval(collect); return; }
       micAnalyser.getByteTimeDomainData(buf);
       var s = 0;
       for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; s += v * v; }
@@ -992,6 +997,7 @@ function vAiTune() {
     }, 50);
     setTimeout(function() {
       clearInterval(collect);
+      if (!samples.length) { msg.textContent = '⚠️ 采集失败，请重试'; msg.style.color = 'var(--red)'; return; }
       var avg = samples.reduce(function(a, b) { return a + b; }, 0) / samples.length;
       var peak = Math.max.apply(null, samples);
       applyAiTune(avg, peak, msg);
