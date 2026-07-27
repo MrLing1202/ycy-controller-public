@@ -66,7 +66,7 @@ socket_on('connect', function() { addLog('info', '已连接'); });
 
 socket_on('status', function(s) {
   isConnected = s.connected;
-  document.getElementById('dot').className = 'status-dot ' + (s.connected ? 'on' : 'off');
+  document.getElementById('dot').className = 'dot ' + (s.connected ? 'on' : 'off');
   document.getElementById('statusText').textContent = s.connected ? '已连接: ' + s.device_name : '未连接';
   if (s.battery >= 0) {
     document.getElementById('batText').textContent = s.battery + '%';
@@ -137,7 +137,6 @@ socket_on('ai_tick', function(d) {
     recordStep(d.speeds.a, d.speeds.b, d.speeds.c);
     if (bleChar) { bleWrite(d.speeds.a, d.speeds.b, d.speeds.c); }
   }
-  if (bleChar && d.speeds) bleWrite(d.speeds.a, d.speeds.b, d.speeds.c);
 });
 socket_on('ai_narration', function(d) {
   var box = document.getElementById('aiNarrationBox');
@@ -315,7 +314,7 @@ function addChatBubble(text, isUser) {
 }
 async function startVoice() {
   try {
-    var stream = await navigator.mediaDevices.getUserAudio({audio: true});
+    var stream = await navigator.mediaDevices.getUserMedia({audio: true});
     voiceRecorder = new MediaRecorder(stream);
     voiceChunks = [];
     voiceRecorder.ondataavailable = function(e) { voiceChunks.push(e.data); };
@@ -339,6 +338,141 @@ function stopVoice() {
     document.getElementById('voiceBtn').style.color = '';
   }
 }
+// ─── Voice Analyzer Engine (Frontend Local) ───────────
+// 双层架构：
+//   Layer1(前端): 本地五维评分 + 即时BLE停止 → 零延迟安全层
+//   Layer2(服务端): 接收数据 + AI通知 + 日志 → 智能协同层
+var voiceEngine = {
+  // 配置（与服务端 VoiceConfig 保持一致）
+  cfg: {
+    weight_volume: 0.30, weight_pitch: 0.15, weight_density: 0.25,
+    weight_urgency: 0.15, weight_sustain: 0.15,
+    volume_floor: 5, volume_ceiling: 80, volume_peak: 60,
+    pitch_floor: 100, pitch_ceiling: 1200, pitch_boost: 600,
+    density_window: 5, density_max: 12, density_min: 2,
+    urgency_window: 10, urgency_max_slope: 8, urgency_decay: 0.92,
+    sustain_threshold: 40, sustain_full: 4, sustain_decay: 0.97,
+    climax_threshold: 72, climax_hold: 1.2, cooldown: 15,
+    min_frames: 15
+  },
+  // 状态
+  frames: [],          // {vol, pitch, ts}
+  vocalEvents: [],     // 发声事件时间戳
+  sustainAccum: 0,
+  urgencyScore: 0,
+  aboveSince: null,
+  lastTrigger: 0,
+  totalScore: 0,
+  dims: {volume:0, pitch:0, density:0, urgency:0, sustain:0},
+  triggered: false,
+
+  reset: function() {
+    this.frames = []; this.vocalEvents = [];
+    this.sustainAccum = 0; this.urgencyScore = 0;
+    this.aboveSince = null; this.totalScore = 0;
+    this.dims = {volume:0, pitch:0, density:0, urgency:0, sustain:0};
+    this.triggered = false;
+  },
+
+  process: function(vol, pitch) {
+    var now = Date.now() / 1000;
+    var c = this.cfg;
+    this.frames.push({vol:vol, pitch:pitch, ts:now});
+    if (this.frames.length > 200) this.frames.shift();
+    if (vol > c.volume_peak) this.vocalEvents.push(now);
+    // 清理过期事件
+    var wStart = now - c.density_window;
+    while (this.vocalEvents.length && this.vocalEvents[0] < wStart) this.vocalEvents.shift();
+    if (this.frames.length < c.min_frames) return;
+
+    // ── 维度1: 音量强度 ──
+    var recent = this.frames.slice(-5);
+    var avgVol = recent.reduce(function(s,f){return s+f.vol;},0) / recent.length;
+    var dVol = Math.max(0, Math.min(1, (avgVol - c.volume_floor) / (c.volume_ceiling - c.volume_floor)));
+
+    // ── 维度2: 音调高度 ──
+    var dPitch = 0;
+    if (vol > c.volume_floor && pitch > c.pitch_floor) {
+      dPitch = Math.max(0, Math.min(1, (pitch - c.pitch_floor) / (c.pitch_ceiling - c.pitch_floor)));
+      if (pitch > c.pitch_boost) dPitch = Math.min(1, dPitch * 1.2);
+    }
+
+    // ── 维度3: 密集度 ──
+    var count = this.vocalEvents.length;
+    var dDensity = count < c.density_min ? 0 :
+      Math.max(0, Math.min(1, (count - c.density_min) / (c.density_max - c.density_min)));
+
+    // ── 维度4: 急促性 ──
+    var n = Math.min(c.urgency_window, this.frames.length);
+    var fSlice = this.frames.slice(-n);
+    var dt = fSlice[fSlice.length-1].ts - fSlice[0].ts;
+    if (dt < 0.01) dt = 0.1;
+    var dv = fSlice[fSlice.length-1].vol - fSlice[0].vol;
+    var slope = Math.max(0, dv / dt);
+    var instant = Math.min(1, slope / c.urgency_max_slope);
+    if (instant > this.urgencyScore) this.urgencyScore += (instant - this.urgencyScore) * 0.6;
+    else this.urgencyScore *= c.urgency_decay;
+    var dUrgency = this.urgencyScore;
+
+    // ── 维度5: 持续性 ──
+    if (vol > c.sustain_threshold) this.sustainAccum += 0.1;
+    else this.sustainAccum *= c.sustain_decay;
+    var dSustain = Math.max(0, Math.min(1, this.sustainAccum / c.sustain_full));
+
+    this.dims = {volume:dVol, pitch:dPitch, density:dDensity, urgency:dUrgency, sustain:dSustain};
+
+    // ── 加权综合评分 ──
+    this.totalScore = Math.min(100, (
+      dVol * c.weight_volume + dPitch * c.weight_pitch +
+      dDensity * c.weight_density + dUrgency * c.weight_urgency +
+      dSustain * c.weight_sustain
+    ) * 100);
+
+    // ── 触发判定 ──
+    this._checkTrigger(now);
+  },
+
+  _checkTrigger: function(now) {
+    var c = this.cfg;
+    // 冷却期
+    if (now - this.lastTrigger < c.cooldown) { this.aboveSince = null; return; }
+    if (this.totalScore >= c.climax_threshold) {
+      if (!this.aboveSince) this.aboveSince = now;
+      if (now - this.aboveSince >= c.climax_hold) this._fire(now);
+    } else {
+      if (this.totalScore < c.climax_threshold * 0.85) this.aboveSince = null;
+    }
+  },
+
+  _fire: function(now) {
+    this.lastTrigger = now;
+    this.aboveSince = null;
+    this.triggered = true;
+    this.sustainAccum = 0;
+    this.urgencyScore = 0;
+    // ══ Layer1: 前端即时停止（零延迟）══
+    if (bleChar) { bleWrite(0, 0, 0); }  // Web Bluetooth 直停
+    socket_emit('set_speed', {a:0, b:0, c:0});  // 服务端BLE停
+    // ══ 通知 Layer2: 服务端 AI + 日志 ══
+    socket_emit('voice_climax_triggered', {
+      score: Math.round(this.totalScore),
+      dims: this.dims,
+      sustain: this.sustainAccum,
+      timestamp: now
+    });
+    showToast('🛑 声音寸止触发！设备已停止', 'err');
+    addLog('err', '🎤 声音寸止触发! 评分=' + Math.round(this.totalScore));
+    // 同步停止AI/随机/音频跟随
+    if (aiRunning) { socket_emit('stop_ai', {}); aiRunning = false; updateAiUI(); }
+    if (typeof randomRunning !== 'undefined' && randomRunning) {
+      randomRunning = false;
+      var rb = document.getElementById('randomBtn');
+      if (rb) { rb.textContent = '🎲 随机'; rb.style.background = 'var(--orange)'; rb.style.boxShadow = 'none'; }
+    }
+    if (typeof audioReactive !== 'undefined' && audioReactive.running) arStop();
+  }
+};
+
 async function toggleMic() {
   buttonFeedback(document.getElementById('micBtn'));
   if (micActive) {
@@ -349,6 +483,7 @@ async function toggleMic() {
     document.getElementById('micBtn').classList.remove('active');
     document.getElementById('micBtn').textContent = '🎤';
     document.getElementById('micMeter').style.width = '0%';
+    document.getElementById('voicePanel').style.display = 'none';
     showToast('🎤 监听已关闭', 'warn');
     return;
   }
@@ -360,9 +495,11 @@ async function toggleMic() {
     micAnalyser.fftSize = 2048;
     src.connect(micAnalyser);
     micActive = true;
+    voiceEngine.reset();
     document.getElementById('micBtn').classList.add('active');
     document.getElementById('micBtn').textContent = '🎤●';
-    showToast('🎤 声纹监听已开启', 'ok');
+    document.getElementById('voicePanel').style.display = 'block';
+    showToast('🎤 声纹监听已开启（本地引擎）', 'ok');
     var buf = new Uint8Array(micAnalyser.frequencyBinCount);
     var fbuf = new Float32Array(micAnalyser.frequencyBinCount);
     micInterval = setInterval(function() {
@@ -375,12 +512,56 @@ async function toggleMic() {
       var mx = -Infinity, mi = 0;
       for (var i = 2; i < fbuf.length / 2; i++) { if (fbuf[i] > mx) { mx = fbuf[i]; mi = i; } }
       var pitch = mi * ctx.sampleRate / micAnalyser.fftSize;
+
+      // ══ Layer1: 本地实时分析 + 判定 ══
+      voiceEngine.process(vol, pitch);
+
+      // ══ Layer2: 同步发送服务端（AI协同+日志）══
       socket_emit('voice_data', {volume: vol, pitch: pitch, timestamp: Date.now() / 1000});
+
+      // ══ 本地UI更新（零延迟）══
       document.getElementById('micMeter').style.width = vol + '%';
       document.getElementById('micMeter').style.background = vol > 70 ? 'var(--red)' : vol > 40 ? 'var(--orange)' : 'var(--green)';
+      // 寸止面板
+      var score = voiceEngine.totalScore;
+      document.getElementById('voiceScoreBar').style.width = score + '%';
+      document.getElementById('voiceScoreText').textContent = Math.round(score);
+      var d = voiceEngine.dims;
+      document.getElementById('vDimVol').textContent = Math.round(d.volume * 100);
+      document.getElementById('vDimPitch').textContent = Math.round(d.pitch * 100);
+      document.getElementById('vDimDensity').textContent = Math.round(d.density * 100);
+      document.getElementById('vDimUrgency').textContent = Math.round(d.urgency * 100);
+      document.getElementById('vDimSustain').textContent = Math.round(d.sustain * 100);
+      document.getElementById('vEvents').textContent = voiceEngine.vocalEvents.length;
+      document.getElementById('vSustain').textContent = voiceEngine.sustainAccum.toFixed(1) + 's';
+      var statusEl = document.getElementById('vStatus');
+      var coolRemain = voiceEngine.cfg.cooldown - (Date.now()/1000 - voiceEngine.lastTrigger);
+      if (coolRemain > 0 && voiceEngine.lastTrigger > 0) {
+        statusEl.textContent = '❄ 冷却 ' + Math.ceil(coolRemain) + 's';
+        statusEl.style.color = 'var(--blue)';
+      } else if (voiceEngine.aboveSince) {
+        statusEl.textContent = '⚠ 接近临界!';
+        statusEl.style.color = 'var(--red)';
+      } else if (score > 50) {
+        statusEl.textContent = '● 强度上升';
+        statusEl.style.color = 'var(--orange)';
+      } else {
+        statusEl.textContent = '● 监听中';
+        statusEl.style.color = 'var(--green)';
+      }
     }, 100);
   } catch(e) { showToast('麦克风权限拒绝', 'err'); }
 }
+
+// 服务端寸止事件回显（备用，当服务端先触发时）
+socket_on('voice_state', function(d) {
+  // 仅当本地引擎未活跃时才用服务端数据更新UI
+  if (micActive) return;
+  var score = d.score || 0;
+  document.getElementById('voiceScoreBar').style.width = score + '%';
+  document.getElementById('voiceScoreText').textContent = Math.round(score);
+});
+
 function toggleRecord() {
   buttonFeedback(document.getElementById('recBtn'));
   if (recording) { recording = false; document.getElementById('recBtn').textContent = '⏺'; document.getElementById('recBtn').classList.remove('active'); showToast('录制完成 ' + recordedSteps.length + '步', 'ok'); return; }
@@ -667,3 +848,287 @@ async function saveSettings() {
   } catch(e) { showToast('保存失败', 'err'); }
 }
 loadSettings();
+
+// ─── Audio Reactive Controller ─────────────────────
+// 音频响应模式：分析视频/屏幕声音响度，实时映射到 A/B/C 通道
+var audioReactive = {
+  running: false,
+  audioCtx: null,
+  analyser: null,
+  sourceNode: null,
+  mediaStream: null,
+  mediaElementSource: null,
+  raf: 0,
+  writeTimer: 0,
+  smoothIntensity: 0,
+  lastLoudAt: 0,
+};
+
+function arClamp(v, lo, hi) {
+  v = Number(v);
+  if (!Number.isFinite(v)) return lo;
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function arLog(msg, level) {
+  addLog(level || 'info', '🎵 ' + msg);
+}
+
+function arReadConfig() {
+  return {
+    noiseFloor: Number(document.getElementById('arNoiseFloor').value),
+    gain: Number(document.getElementById('arGain').value),
+    lowBoost: Number(document.getElementById('arLowBoost').value),
+    minIntensity: Number(document.getElementById('arMinIntensity').value),
+    attack: Number(document.getElementById('arAttack').value),
+    release: Number(document.getElementById('arRelease').value),
+    writeHz: Number(document.getElementById('arWriteHz').value),
+    silentStop: Number(document.getElementById('arSilentStop').value),
+    enableA: document.getElementById('arEnableA').checked,
+    enableB: document.getElementById('arEnableB').checked,
+    enableC: document.getElementById('arEnableC').checked,
+    maxA: Number(document.getElementById('arMaxA').value),
+    maxB: Number(document.getElementById('arMaxB').value),
+    maxC: Number(document.getElementById('arMaxC').value),
+    weightA: Number(document.getElementById('arWeightA').value),
+    weightB: Number(document.getElementById('arWeightB').value),
+    weightC: Number(document.getElementById('arWeightC').value),
+  };
+}
+
+function arUpdateOutputs() {
+  var ids = ['arNoiseFloor','arGain','arLowBoost','arMinIntensity','arAttack','arRelease','arWriteHz','arSilentStop','arMaxA','arMaxB','arMaxC','arWeightA','arWeightB','arWeightC'];
+  ids.forEach(function(id) {
+    var el = document.getElementById(id);
+    var out = document.getElementById(id + 'Out');
+    if (!el || !out) return;
+    var v = Number(el.value);
+    if (id.indexOf('weight') >= 0 || id.indexOf('Weight') >= 0) out.textContent = v.toFixed(2);
+    else if (['arNoiseFloor','arAttack','arRelease','arSilentStop','arGain','arLowBoost','arMinIntensity'].indexOf(id) >= 0) out.textContent = v.toFixed(id === 'arNoiseFloor' ? 4 : 2).replace(/0$/, '');
+    else out.textContent = String(Math.round(v));
+  });
+}
+
+function arComputeRms() {
+  if (!audioReactive.analyser) return 0;
+  var data = new Uint8Array(audioReactive.analyser.fftSize);
+  audioReactive.analyser.getByteTimeDomainData(data);
+  var sum = 0;
+  for (var i = 0; i < data.length; i++) {
+    var v = (data[i] - 128) / 128;
+    sum += v * v;
+  }
+  return Math.sqrt(sum / data.length);
+}
+
+function arLoudnessToIntensity(rms, cfg) {
+  var floor = arClamp(cfg.noiseFloor, 0, 0.2);
+  var softFloor = floor * 0.35;
+  if (rms <= softFloor) return 0;
+  var x;
+  if (rms < floor) {
+    var t = (rms - softFloor) / Math.max(0.0001, floor - softFloor);
+    x = t * 0.035 * cfg.gain;
+  } else {
+    x = (rms - floor) * cfg.gain;
+  }
+  x = arClamp(x, 0, 1);
+  var gamma = arClamp(cfg.lowBoost || 0.45, 0.2, 1);
+  var boosted = Math.pow(x, gamma);
+  var y = 1 - Math.exp(-2.2 * boosted);
+  if (y > 0 && cfg.minIntensity > 0) y = Math.max(y, cfg.minIntensity);
+  return arClamp(y, 0, 1);
+}
+
+function arIntensityToSpeeds(intensity, cfg) {
+  var curve = 0.45 * intensity + 0.55 * Math.pow(intensity, 1.35);
+  var a = cfg.enableA ? Math.round(cfg.maxA * cfg.weightA * curve) : 0;
+  var b = cfg.enableB ? Math.round(cfg.maxB * cfg.weightB * curve) : 0;
+  var c = cfg.enableC ? Math.round(cfg.maxC * cfg.weightC * curve) : 0;
+  return { a: arClamp(a, 0, 40), b: arClamp(b, 0, 20), c: arClamp(c, 0, 20) };
+}
+
+function arAudioLoop() {
+  if (!audioReactive.running) return;
+  var cfg = arReadConfig();
+  var rms = arComputeRms();
+  var target = arLoudnessToIntensity(rms, cfg);
+  var alpha = target > audioReactive.smoothIntensity ? cfg.attack : cfg.release;
+  audioReactive.smoothIntensity += (target - audioReactive.smoothIntensity) * alpha;
+  if (target > 0.02) audioReactive.lastLoudAt = performance.now();
+  if (performance.now() - audioReactive.lastLoudAt > cfg.silentStop * 1000) audioReactive.smoothIntensity *= 0.55;
+  if (audioReactive.smoothIntensity < 0.005) audioReactive.smoothIntensity = 0;
+  var rmsEl = document.getElementById('arRmsText');
+  var intEl = document.getElementById('arIntensityText');
+  var fillEl = document.getElementById('arMeterFill');
+  if (rmsEl) rmsEl.textContent = rms.toFixed(3);
+  if (intEl) intEl.textContent = Math.round(audioReactive.smoothIntensity * 100) + '%';
+  if (fillEl) fillEl.style.width = Math.round(audioReactive.smoothIntensity * 100) + '%';
+  audioReactive.raf = requestAnimationFrame(arAudioLoop);
+}
+
+function arActiveTab() {
+  var active = document.querySelector('.ar-tab.active');
+  return active ? active.dataset.arTab : 'file';
+}
+
+async function arSetupFileSource() {
+  var media = document.getElementById('arMediaPlayer');
+  if (!media.src) throw new Error('请先选择本地视频/音频文件');
+  audioReactive.audioCtx = audioReactive.audioCtx || new AudioContext();
+  if (!audioReactive.mediaElementSource) {
+    audioReactive.mediaElementSource = audioReactive.audioCtx.createMediaElementSource(media);
+    audioReactive.analyser = audioReactive.audioCtx.createAnalyser();
+    audioReactive.analyser.fftSize = 2048;
+    audioReactive.mediaElementSource.connect(audioReactive.analyser);
+    audioReactive.analyser.connect(audioReactive.audioCtx.destination);
+  }
+  await audioReactive.audioCtx.resume();
+}
+
+async function arSetupScreenSource() {
+  audioReactive.audioCtx = audioReactive.audioCtx || new AudioContext();
+  if (!audioReactive.mediaStream) throw new Error('请先点击"捕获屏幕声音"');
+  var tracks = audioReactive.mediaStream.getAudioTracks();
+  if (!tracks.length) throw new Error('没有音频轨道，共享时需勾选音频');
+  if (audioReactive.sourceNode) audioReactive.sourceNode.disconnect();
+  audioReactive.sourceNode = audioReactive.audioCtx.createMediaStreamSource(audioReactive.mediaStream);
+  audioReactive.analyser = audioReactive.audioCtx.createAnalyser();
+  audioReactive.analyser.fftSize = 2048;
+  audioReactive.sourceNode.connect(audioReactive.analyser);
+  await audioReactive.audioCtx.resume();
+}
+
+async function arStart() {
+  if (audioReactive.running) return;
+  var demoMode = document.getElementById('arDemoMode') && document.getElementById('arDemoMode').checked;
+  if (!bleChar && !isConnected && !demoMode) {
+    arLog('未连接设备。请连接BLE或勾选模拟模式', 'err');
+    showToast('请先连接设备或勾选模拟', 'err');
+    return;
+  }
+  try {
+    if (arActiveTab() === 'screen') await arSetupScreenSource();
+    else await arSetupFileSource();
+    audioReactive.running = true;
+    audioReactive.smoothIntensity = 0;
+    audioReactive.lastLoudAt = performance.now();
+    cancelAnimationFrame(audioReactive.raf);
+    clearInterval(audioReactive.writeTimer);
+    arAudioLoop();
+    var tick = async function() {
+      if (!audioReactive.running) return;
+      var cfg = arReadConfig();
+      var speeds = arIntensityToSpeeds(audioReactive.smoothIntensity, cfg);
+      try {
+        if (bleChar) { bleWrite(speeds.a, speeds.b, speeds.c); }
+        else if (!demoMode) {
+          fetch('/api/cmd', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd:'set_speed', args:{a:speeds.a, b:speeds.b, c:speeds.c}})});
+        }
+        var spdEl = document.getElementById('arSpeedText');
+        if (spdEl) spdEl.textContent = 'A' + speeds.a + ' B' + speeds.b + ' C' + speeds.c;
+        // 同步更新手动滑条显示
+        document.getElementById('sliderA').value = speeds.a / 40 * 100;
+        document.getElementById('valA').textContent = speeds.a;
+        document.getElementById('sliderB').value = speeds.b / 20 * 100;
+        document.getElementById('valB').textContent = speeds.b;
+        document.getElementById('sliderC').value = speeds.c / 20 * 100;
+        document.getElementById('valC').textContent = speeds.c;
+        updateSpeedBars(speeds.a, speeds.b, speeds.c);
+      } catch(e) {
+        arLog('发送失败: ' + e.message, 'err');
+        audioReactive.running = false;
+      }
+    };
+    var interval = Math.max(80, Math.round(1000 / arReadConfig().writeHz));
+    audioReactive.writeTimer = setInterval(tick, interval);
+    await tick();
+    arLog('音频跟随已启动', 'ok');
+    showToast('🎵 音频跟随已启动', 'ok');
+    var btn = document.getElementById('arBtnStart');
+    if (btn) { btn.textContent = '⏹ 停止跟随'; btn.className = 'btn btn-d'; }
+  } catch(e) {
+    audioReactive.running = false;
+    arLog('启动失败: ' + e.message, 'err');
+    showToast('音频跟随启动失败', 'err');
+  }
+}
+
+async function arStop() {
+  audioReactive.running = false;
+  cancelAnimationFrame(audioReactive.raf);
+  clearInterval(audioReactive.writeTimer);
+  audioReactive.smoothIntensity = 0;
+  var fillEl = document.getElementById('arMeterFill');
+  var intEl = document.getElementById('arIntensityText');
+  if (fillEl) fillEl.style.width = '0%';
+  if (intEl) intEl.textContent = '0%';
+  if (bleChar) bleWrite(0, 0, 0);
+  else socket_emit('set_speed', {a:0, b:0, c:0});
+  arLog('音频跟随已停止', 'warn');
+  showToast('🎵 音频跟随已停止', 'warn');
+  var btn = document.getElementById('arBtnStart');
+  if (btn) { btn.textContent = '▶ 启动跟随'; btn.className = 'btn btn-s'; }
+}
+
+function arToggle() {
+  if (audioReactive.running) arStop();
+  else arStart();
+}
+
+function arCalibrate() {
+  var rms = arComputeRms();
+  var value = arClamp(Math.max(0.001, rms * 0.75), 0, 0.08);
+  document.getElementById('arNoiseFloor').value = String(value);
+  arUpdateOutputs();
+  arLog('静音阈值校准为 ' + value.toFixed(4));
+  showToast('已校准静音阈值: ' + value.toFixed(4), 'ok');
+}
+
+function arSwitchTab(tab) {
+  document.querySelectorAll('.ar-tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.ar-panel').forEach(function(p) { p.classList.remove('active'); });
+  var btn = document.querySelector('.ar-tab[data-ar-tab="' + tab + '"]');
+  if (btn) btn.classList.add('active');
+  document.getElementById(tab === 'file' ? 'arTabFile' : 'arTabScreen').classList.add('active');
+}
+
+function arInit() {
+  // 绑定文件选择
+  var fileInput = document.getElementById('arMediaFile');
+  if (fileInput) {
+    fileInput.addEventListener('change', function() {
+      var file = fileInput.files[0];
+      if (!file) return;
+      var url = URL.createObjectURL(file);
+      document.getElementById('arMediaPlayer').src = url;
+      audioReactive.mediaElementSource = null;
+      arLog('已载入: ' + file.name);
+      showToast('已载入: ' + file.name, 'ok');
+    });
+  }
+  // 绑定屏幕捕获
+  var capBtn = document.getElementById('arBtnCapture');
+  if (capBtn) {
+    capBtn.addEventListener('click', async function() {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) throw new Error('浏览器不支持');
+        if (audioReactive.mediaStream) audioReactive.mediaStream.getTracks().forEach(function(t) { t.stop(); });
+        audioReactive.mediaStream = await navigator.mediaDevices.getDisplayMedia({video: true, audio: true});
+        var preview = document.getElementById('arScreenPreview');
+        if (preview) preview.srcObject = audioReactive.mediaStream;
+        var tracks = audioReactive.mediaStream.getAudioTracks();
+        arLog(tracks.length ? '已捕获屏幕音频' : '未捕获到音频轨道', tracks.length ? 'ok' : 'warn');
+        showToast(tracks.length ? '已捕获屏幕音频' : '未捕获到音频', tracks.length ? 'ok' : 'warn');
+      } catch(e) { arLog('捕获失败: ' + e.message, 'err'); }
+    });
+  }
+  // 绑定参数滑条
+  var sliderIds = ['arNoiseFloor','arGain','arLowBoost','arMinIntensity','arAttack','arRelease','arWriteHz','arSilentStop','arMaxA','arMaxB','arMaxC','arWeightA','arWeightB','arWeightC'];
+  sliderIds.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('input', arUpdateOutputs);
+  });
+  arUpdateOutputs();
+}
+arInit();

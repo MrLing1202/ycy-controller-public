@@ -18,13 +18,16 @@ from patterns import PatternEngine, PatternConfig, PatternType
 from core.ai_controller import AIController, list_personalities
 from voice_analyzer import VoiceAnalyzer, VoiceConfig
 
+os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs'), exist_ok=True)
+os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'personalities'), exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%H:%M:%S",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('logs/server.log', encoding='utf-8'),
+        logging.FileHandler(os.path.join(os.path.dirname(__file__), 'logs', 'server.log'), encoding='utf-8'),
     ]
 )
 logger = logging.getLogger("ycy.server")
@@ -38,6 +41,7 @@ engine: Optional[PatternEngine] = None
 ai_ctrl: Optional[AIController] = None
 voice_analyzer: Optional[VoiceAnalyzer] = None
 loop: Optional[asyncio.AbstractEventLoop] = None
+_random_running: bool = False  # 随机模式运行标志
 
 def run_async(coro):
     if loop:
@@ -170,12 +174,16 @@ def handle_set_mode(data):
 
 @socketio.on('stop_all')
 def handle_stop_all():
+    global _random_running
+    _random_running = False
     logger.info("紧急停止!")
 
     async def do():
         if engine and engine.is_running:
             await engine.stop()
         await device.emergency_stop()
+        if ai_ctrl and ai_ctrl.is_running:
+            await ai_ctrl.stop()
         socketio.emit('status', device.get_status())
 
     threading.Thread(target=lambda: run_async(do()), daemon=True).start()
@@ -293,6 +301,48 @@ def handle_ai_feedback(data):
 def handle_voice_data(data):
     if voice_analyzer:
         voice_analyzer.process_audio_data(data)
+        # 每5帧广播一次分析状态（约500ms）
+        if len(voice_analyzer._frames) % 5 == 0:
+            state = voice_analyzer.get_state()
+            socketio.emit('voice_state', state)
+            _emit_event('voice_state', state)
+
+@socketio.on('voice_climax_triggered')
+def handle_voice_climax_triggered(data):
+    """前端本地寸止触发通知 — 协同层
+
+    前端已完成即时停止，服务端负责：
+    1. 停止AI控制器
+    2. 记录事件日志
+    3. 同步服务端分析器状态（避免重复触发）
+    """
+    global voice_analyzer
+    score = data.get('score', 0)
+    logger.warning(
+        f"[寸止-前端触发] 评分={score} | "
+        f"dims={data.get('dims', {})} | "
+        f"服务端已同步停止"
+    )
+    # 停止AI
+    if ai_ctrl and ai_ctrl.is_running:
+        try:
+            ai_ctrl.on_voice_climax()
+        except Exception as e:
+            logger.error(f"[寸止] AI停止失败: {e}")
+    # 停止设备（服务端BLE备份）
+    if device and device.is_connected:
+        try:
+            run_async(device.emergency_stop())
+        except Exception:
+            pass
+    # 同步服务端分析器冷却状态
+    if voice_analyzer:
+        import time as _t
+        voice_analyzer._last_trigger_time = _t.time()
+        voice_analyzer._above_threshold_since = None
+    # 广播事件
+    _emit_event('voice_climax', {'score': score, 'source': 'frontend'})
+    socketio.emit('voice_climax', {'score': score, 'source': 'frontend'})
 
 @socketio.on('ai_chat')
 def handle_ai_chat(data):
@@ -304,11 +354,9 @@ def handle_ai_chat(data):
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": f"用户对你说: {msg}\n请以你的人格角色回复1-2句话。"},
             ]
-            loop = asyncio.get_event_loop()
-            response = loop.run_in_executor(None, ai_ctrl._call_ai, messages)
             import concurrent.futures
-            if isinstance(response, concurrent.futures.Future):
-                response = response.result(timeout=15)
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                response = pool.submit(ai_ctrl._call_ai, messages).result(timeout=15)
             socketio.emit('ai_chat_response', {'response': response, 'mood': '💬'})
         except Exception as e:
             logger.error(f"AI聊天出错: {e}")
@@ -341,6 +389,7 @@ def api_events():
 
 @app.route('/api/cmd', methods=['POST'])
 def api_cmd():
+    global _random_running, ai_ctrl, voice_analyzer
     d = request.json or {}
     cmd = d.get('cmd','')
     a = d.get('args', {})
@@ -370,6 +419,7 @@ def api_cmd():
             await device.disconnect()
         threading.Thread(target=lambda: run_async(_()), daemon=True).start()
     elif cmd == 'stop_all':
+        _random_running = False
         async def _():
             if engine and engine.is_running: await engine.stop()
             await device.emergency_stop()
@@ -394,6 +444,7 @@ def api_cmd():
                     'mood':(ai_ctrl._history[-1]['mood'] if ai_ctrl._history else '...'),
                     'behavior':(ai_ctrl._history[-1]['behavior'] if ai_ctrl._history else '')
                 }))
+                global voice_analyzer
                 try:
                     voice_analyzer = VoiceAnalyzer()
                     voice_analyzer.on_climax(ai_ctrl.on_voice_climax)
@@ -437,9 +488,9 @@ def api_cmd():
 当前速度: A={speeds['A']} B={speeds['B']} C={speeds['C']}
 每条消息都会实时应用到设备。根据你的角色和对话内容决定强度变化。"""
                 msgs = [{"role":"system","content":prompt},{"role":"user","content":msg}]
-                loop = asyncio.get_event_loop()
-                resp = loop.run_in_executor(None, ai_ctrl._call_ai, msgs)
-                if hasattr(resp, 'result'): resp = resp.result(timeout=15)
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    resp = pool.submit(ai_ctrl._call_ai, msgs).result(timeout=15)
                 import json as _json
                 try:
                     arr = _json.loads(resp)
@@ -470,6 +521,10 @@ def api_cmd():
     elif cmd == 'voice_data':
         if voice_analyzer:
             voice_analyzer.process_audio_data(a)
+            if len(voice_analyzer._frames) % 5 == 0:
+                _emit_event('voice_state', voice_analyzer.get_state())
+    elif cmd == 'voice_climax_triggered':
+        handle_voice_climax_triggered(a)
     elif cmd == 'voice_message':
         logger.info(f'[VOICE] 收到语音消息: {len(str(a.get("audio","")))} bytes')
     elif cmd == 'start_pattern':
@@ -526,13 +581,15 @@ def api_cmd():
         threading.Thread(target=lambda: run_async(_()), daemon=True).start()
     elif cmd == 'start_random':
         import random as _rand
+        _random_running = True
         interval = a.get('interval', [2, 6])
         rest_chance = a.get('rest_chance', 0.25)
         async def _():
+            global _random_running
             logger.info(f'[RANDOM] Starting random mode interval={interval} rest_chance={rest_chance}')
             _emit_event('ai_started', {'personality':{'id':'random','name':'随机','emoji':'🎲'}, 'max_duration': 0})
             step = 0
-            while True:
+            while _random_running:
                 # 有概率休息(全零)
                 if _rand.random() < rest_chance:
                     ra, rb, rc = 0, 0, 0

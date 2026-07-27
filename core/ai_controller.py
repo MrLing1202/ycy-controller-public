@@ -212,6 +212,51 @@ class AIController:
         """注册旁白回调"""
         self._narration_callback = callback
 
+    def on_voice_climax(self):
+        """声音寸止触发回调 — 由 VoiceAnalyzer 调用
+
+        当检测到用户声音达到临界点时，立即停止设备并记录事件。
+        """
+        logger.warning(
+            f"[寸止] 声音触发紧急停止! 步数={self._step_count} "
+            f"Edge={self._edge_count} 强度={self.intensity:.0f}%"
+        )
+        # 立即停止设备（跨线程调度到事件循环）
+        try:
+            if hasattr(self, '_loop') and self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.device.emergency_stop(), self._loop)
+            else:
+                # 回退：新线程执行
+                import threading
+                def _stop():
+                    _loop = asyncio.new_event_loop()
+                    _loop.run_until_complete(self.device.emergency_stop())
+                    _loop.close()
+                threading.Thread(target=_stop, daemon=True).start()
+        except Exception as e:
+            logger.error(f"[寸止] 设备停止失败: {e}")
+
+        # 停止AI循环
+        self._running = False
+
+        # 记录到历史
+        self._history.append({
+            'step': self._step_count,
+            'a': 0, 'b': 0, 'c': 0,
+            'intensity': 0,
+            'narration': '🎤 声音寸止触发！设备已紧急停止。',
+            'behavior': 'voice_climax_stop',
+            'mood': '🛑',
+            'time': time.time(),
+        })
+
+        # 通知前端
+        if self._narration_callback:
+            try:
+                self._narration_callback('🎤 检测到声音临界点，已强制停止。')
+            except Exception:
+                pass
+
     def _init_client(self):
         """初始化 AI 客户端"""
         api_key = os.environ.get("AI_API_KEY", "")
@@ -252,6 +297,7 @@ class AIController:
 
         # 启动执行任务
         self._task = asyncio.create_task(self._run_loop())
+        self._loop = asyncio.get_event_loop()  # 保存事件循环引用
         logger.info(
             f"AI控制启动: {self._personality.emoji} {self._personality.name}, "
             f"最大时长 {max_duration}s"

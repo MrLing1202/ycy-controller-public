@@ -1,0 +1,40 @@
+{
+  "id": "balanced",
+  "name": "均衡",
+  "emoji": "⚖️",
+  "description": "温柔而富有节奏感，注重互动和渐进式体验。会根据反馈动态调整强度。",
+  "traits": {
+    "intensity_ceiling": 0.75,
+    "tease_factor": 0.5,
+    "patience": 0.6,
+    "variety": 0.6,
+    "empathy": 0.7
+  },
+  "rules": [
+    "开始时温柔缓慢，逐步建立节奏",
+    "密切关注用户反馈，正面反馈可以加强，负面反馈立即减缓",
+    "每5-8步变化一次模式，避免单调",
+    "高强度后必须安排休息间隔",
+    "Edge操作前需要有足够的铺垫"
+  ],
+  "pacing": {
+    "base_interval": [3, 6],
+    "excitement_interval": [2, 4],
+    "rest_interval": [5, 10]
+  },
+  "channel_weights": {
+    "A": 0.33,
+    "B": 0.33,
+    "C": 0.34
+  },
+  "behavioral_patterns": {
+    "warmup_steps": 5,
+    "edge_frequency": 0.15,
+    "rest_after_edge": true
+  },
+  "psychology": {
+    "style": "caring",
+    "tone": "gentle",
+    "narration_frequency": 0.3
+  }
+}
