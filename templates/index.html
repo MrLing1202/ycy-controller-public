@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>YCY Controller</title>
+<style>
+/* ═══ Reset & Variables ═══ */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0f;--card:#13131d;--card2:#1a1a2a;--border:#232336;
+  --text:#e8e8f0;--dim:#8a8aa0;--accent:#7c3aed;--accent2:#a78bfa;
+  --green:#10b981;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--pink:#ec4899;
+  --r:12px;--r-sm:8px;
+  --shadow:0 2px 12px rgba(0,0,0,.4);--shadow-sm:0 1px 4px rgba(0,0,0,.3);
+  --max-w:520px;
+  --safe-b:env(safe-area-inset-bottom,0px);
+}
+:root.light{
+  --bg:#f2f2f7;--card:#fff;--card2:#f8f8fc;--border:#e2e2ea;
+  --text:#1a1a2e;--dim:#6b6b80;--accent:#6d28d9;--accent2:#7c3aed;
+  --shadow:0 2px 12px rgba(0,0,0,.08);--shadow-sm:0 1px 4px rgba(0,0,0,.05);
+}
+
+/* ═══ Base Layout ═══ */
+html,body{height:100%;overflow:hidden}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;
+  background:var(--bg);color:var(--text);
+  display:flex;flex-direction:column;
+  height:100vh;height:100dvh;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ═══ Top Bar ═══ */
+.topbar{
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--card);border-bottom:1px solid var(--border);
+  padding:8px 14px;font-size:0.82em;flex-shrink:0;height:44px;
+  box-shadow:var(--shadow-sm);position:relative;z-index:10;
+}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px}
+.dot.on{background:var(--green);box-shadow:0 0 6px var(--green)}.dot.off{background:var(--red)}
+
+/* ═══ Tab Content ═══ */
+.tab-content{flex:1;overflow:hidden;position:relative}
+.tab-panel{
+  position:absolute;inset:0;overflow-y:auto;display:none;
+  padding:12px 12px calc(12px + var(--safe-b));
+  -webkit-overflow-scrolling:touch;
+}
+.tab-panel.active{display:block}
+.tab-panel-inner{max-width:var(--max-w);margin:0 auto}
+
+/* ═══ Cards ═══ */
+.card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--r);padding:12px;margin-bottom:8px;
+  box-shadow:var(--shadow-sm);
+}
+.card h3{font-size:0.78em;color:var(--accent2);margin-bottom:8px;font-weight:700;letter-spacing:.02em}
+
+/* ═══ Buttons ═══ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:7px 12px;border:none;border-radius:var(--r-sm);
+  font-size:0.76em;cursor:pointer;transition:all .12s;
+  font-weight:600;user-select:none;-webkit-tap-highlight-color:transparent;
+  min-height:32px;
+}
+.btn:hover{filter:brightness(1.08)}
+.btn:active{transform:scale(0.94);filter:brightness(0.82)}
+.btn-p{background:var(--accent);color:#fff}
+.btn-d{background:var(--red);color:#fff}
+.btn-s{background:var(--green);color:#fff}
+.btn-g{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-g:hover{border-color:var(--accent);color:var(--accent2)}
+.btn-g:active{border-color:var(--accent)}
+.btn-g.running{background:var(--orange);border-color:var(--orange);color:#fff}
+.btn-ai{
+  background:linear-gradient(135deg,#7c3aed,#ec4899);color:#fff;
+  padding:9px 14px;border-radius:var(--r-sm);font-size:0.82em;
+  box-shadow:0 2px 8px rgba(124,58,237,.3);
+}
+.btn-ai.running{background:linear-gradient(135deg,#ef4444,#f59e0b);box-shadow:0 2px 8px rgba(239,68,68,.3)}
+.btn-group{display:flex;gap:5px;flex-wrap:wrap}
+.btn-sm{padding:6px 10px;font-size:0.72em;min-height:28px}
+
+/* ═══ Inputs ═══ */
+select,input[type=number],input[type=text]{
+  padding:6px 8px;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--r-sm);color:var(--text);font-size:0.78em;outline:none;
+  transition:border-color .15s;
+}
+select:focus,input[type=number]:focus,input[type=text]:focus{border-color:var(--accent)}
+input[type=number]{min-width:46px;text-align:center;padding:6px 4px}
+input[type=range]{width:100%;height:5px;-webkit-appearance:none;background:var(--border);border-radius:3px;outline:none}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;
+  background:var(--accent);cursor:pointer;border:2px solid var(--card);
+  box-shadow:0 1px 3px rgba(0,0,0,.3);
+}
+.slider-row{display:flex;align-items:center;gap:6px;margin-bottom:7px}
+.slider-row label{width:56px;font-size:0.72em;color:var(--dim);flex-shrink:0}
+.slider-row input[type=range]{flex:1}
+.slider-row .val{width:36px;text-align:right;font-size:0.76em;color:var(--accent2);font-weight:700;flex-shrink:0}
+
+/* ═══ Pattern Grid ═══ */
+.pat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.pat-btn{
+  padding:10px 6px;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--r-sm);cursor:pointer;text-align:center;
+  font-size:0.75em;transition:all .12s;
+}
+.pat-btn:hover{border-color:var(--accent2);background:rgba(124,58,237,.05)}
+.pat-btn:active{transform:scale(0.94)}
+.pat-btn.active{border-color:var(--accent);background:rgba(124,58,237,.1);box-shadow:0 0 8px rgba(124,58,237,.15)}
+
+/* ═══ Stats ═══ */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin:8px 0}
+.stat{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:7px 3px;text-align:center}
+.stat .lb{font-size:0.6em;color:var(--dim);margin-bottom:2px}.stat .vl{font-size:0.85em;font-weight:700;color:var(--accent2)}
+
+/* ═══ Bars & Meters ═══ */
+.bar-bg{width:100%;height:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;overflow:hidden;margin:5px 0}
+.bar-fill{height:100%;border-radius:4px;transition:width .3s;background:linear-gradient(90deg,var(--green),var(--orange),var(--red))}
+.speed-bars{display:flex;gap:5px;align-items:flex-end;height:36px}
+.speed-bar{flex:1;border-radius:3px 3px 0 0;transition:height .3s;min-height:2px}
+.speed-bar.a{background:var(--blue)}.speed-bar.b{background:var(--pink)}.speed-bar.c{background:var(--orange)}
+.mic-meter{height:3px;background:var(--bg);border-radius:2px;overflow:hidden}
+.mic-meter-fill{height:100%;width:0%;border-radius:2px;transition:width .1s}
+
+/* ═══ Narration & Log ═══ */
+.narration{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);
+  padding:8px;flex:1;overflow-y:auto;font-size:0.78em;line-height:1.6;min-height:80px;
+}
+.narration .entry{padding:3px 0;border-bottom:1px solid rgba(35,35,54,.4)}
+.log-box{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);
+  padding:8px;flex:1;overflow-y:auto;font-family:'SF Mono',Menlo,monospace;
+  font-size:0.68em;line-height:1.5;color:var(--dim);
+}
+.log-box .info{color:var(--blue)}.log-box .warn{color:var(--orange)}.log-box .err{color:var(--red)}.log-box .ok{color:var(--green)}.log-box .ai{color:var(--pink)}
+
+/* ═══ Feedback ═══ */
+.fb-row{display:flex;gap:6px;margin:5px 0}
+.fb-btn{
+  flex:1;padding:9px;border:1.5px solid var(--border);border-radius:var(--r-sm);
+  background:var(--bg);font-size:1.1em;cursor:pointer;text-align:center;transition:all .12s;
+}
+.fb-btn:active{transform:scale(0.92)}
+.fb-btn.sel{border-color:var(--accent);background:rgba(124,58,237,.12);box-shadow:0 0 8px rgba(124,58,237,.2)}
+.fb-btn:hover{border-color:var(--accent2)}
+
+/* ═══ Chart ═══ */
+.chart-wrap{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);height:44px;overflow:hidden;margin:6px 0}
+.chart-wrap canvas{width:100%;height:100%}
+
+/* ═══ Chat ═══ */
+.chat-row{display:flex;gap:6px;margin-top:8px}
+.chat-row input{flex:1}
+
+/* ═══ Toast ═══ */
+.toast{
+  position:fixed;top:52px;left:50%;transform:translateX(-50%);
+  background:var(--card);border:1px solid var(--accent);border-radius:var(--r);
+  padding:8px 18px;font-size:0.8em;z-index:200;transition:opacity .3s;
+  opacity:0;pointer-events:none;box-shadow:var(--shadow);max-width:90vw;
+}
+.toast.show{opacity:1}
+
+/* ═══ Audio Reactive Tabs ═══ */
+.ar-tab{background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);color:var(--dim);font-size:0.75em;padding:7px 12px;cursor:pointer;transition:all .12s}
+.ar-tab.active{border-color:var(--accent);color:var(--accent2);background:rgba(124,58,237,.08)}
+.ar-panel{margin-top:8px}
+.ar-panel:not(.active){display:none}
+
+/* ═══ Emergency Stop ═══ */
+.emergency{
+  position:absolute;bottom:calc(56px + var(--safe-b));right:12px;z-index:50;
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+}
+.emergency .btn{
+  width:48px;height:48px;border-radius:50%;font-size:1.1em;
+  box-shadow:0 3px 14px rgba(239,68,68,.5);border:2px solid rgba(239,68,68,.4);
+  animation:emg-pulse 2.5s infinite;
+}
+@keyframes emg-pulse{0%,100%{box-shadow:0 3px 14px rgba(239,68,68,.4)}50%{box-shadow:0 3px 20px rgba(239,68,68,.7)}}
+
+/* ═══ Bottom Tab Bar ═══ */
+.tabbar{
+  display:flex;background:var(--card);border-top:1px solid var(--border);
+  flex-shrink:0;height:52px;padding-bottom:var(--safe-b);
+  box-shadow:0 -1px 8px rgba(0,0,0,.15);position:relative;z-index:10;
+}
+.tabbar button{
+  flex:1;background:none;border:none;color:var(--dim);
+  font-size:0.68em;cursor:pointer;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:3px;transition:color .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.tabbar button.active{color:var(--accent2)}
+.tabbar button:active{transform:scale(0.9)}
+
+/* ═══ AI Tab Layout ═══ */
+.ai-select-row{display:flex;gap:6px;margin-bottom:8px}
+.ai-select-row select{flex:1;min-width:0}
+.ai-actions{display:flex;gap:6px;margin-bottom:10px}
+.ai-actions .btn-ai{flex:2;font-size:0.82em;padding:10px 12px;border-radius:var(--r-sm)}
+.ai-actions .btn-random{flex:1;padding:10px 8px;border-radius:var(--r-sm);font-size:0.76em;font-weight:600;border:none;cursor:pointer;transition:all .12s;color:#fff;background:var(--orange)}
+.ai-actions .btn-random:active{transform:scale(0.94)}
+.ai-actions .btn-random.running{background:var(--red);box-shadow:0 0 8px rgba(239,68,68,.4)}
+.ai-params{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:0.7em;color:var(--dim);padding:8px 0;border-top:1px solid var(--border)}
+.ai-params label{display:flex;align-items:center;gap:3px}
+.ai-params input[type=number]{width:46px}
+.ai-status-card{border-left:3px solid var(--accent);transition:border-color .3s}
+.ai-status-card.running{border-left-color:var(--green);animation:status-glow 2s ease-in-out infinite}
+@keyframes status-glow{0%,100%{box-shadow:var(--shadow-sm)}50%{box-shadow:0 0 10px rgba(16,185,129,.12)}}
+
+/* ═══ Voice Panel ═══ */
+.v-dims{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin:6px 0}
+.v-dim{text-align:center}
+.v-dim .v-lb{font-size:0.58em;color:var(--dim);margin-bottom:2px}
+.v-dim .v-bar{height:32px;background:var(--bg);border:1px solid var(--border);border-radius:4px;overflow:hidden;display:flex;align-items:flex-end}
+.v-dim .v-fill{width:100%;border-radius:3px;transition:height .15s;min-height:1px}
+.v-dim .v-num{font-size:0.62em;font-weight:700;margin-top:2px;color:var(--text)}
+.v-settings{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
+.v-settings label{display:flex;align-items:center;justify-content:space-between;font-size:0.65em;color:var(--dim)}
+.v-settings input[type=number]{width:44px;font-size:0.9em}
+/* 声音寸止动效 */
+.v-dim .v-fill{transition:height .12s ease-out}
+#voicePanel.triggered{animation:v-trigger-flash .6s ease-out 3}
+@keyframes v-trigger-flash{0%,100%{box-shadow:none}50%{box-shadow:0 0 20px rgba(239,68,68,.6);border-color:var(--red)}}
+#voicePanel.warning{border-left:3px solid var(--orange)}
+#voicePanel.critical{border-left:3px solid var(--red);animation:v-pulse 1s ease-in-out infinite}
+@keyframes v-pulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 12px rgba(239,68,68,.3)}}
+.v-spark{width:100%;height:28px;margin:4px 0;border-radius:4px;background:var(--bg);border:1px solid var(--border)}
+.v-warn-bar{height:3px;border-radius:2px;margin-top:4px;transition:width .2s,background .3s}
+.v-confidence{font-size:0.58em;color:var(--dim);display:flex;align-items:center;gap:4px}
+.v-confidence .dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+
+/* ═══ Collapsible Sections ═══ */
+.collapse-hdr{display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
+.collapse-hdr .arrow{font-size:0.6em;color:var(--dim);transition:transform .2s}
+.collapse-hdr.open .arrow{transform:rotate(90deg)}
+.collapse-body{overflow:hidden;max-height:0;transition:max-height .25s ease;opacity:0;transition:max-height .25s ease,opacity .2s}
+.collapse-body.open{max-height:600px;opacity:1}
+
+/* ═══ Channel Meters (AI Tab) ═══ */
+.ch-meters{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:6px 0}
+.ch-meter{text-align:center}
+.ch-meter .ch-label{font-size:0.6em;color:var(--dim);margin-bottom:2px}
+.ch-meter .ch-bar{height:5px;background:var(--bg);border:1px solid var(--border);border-radius:3px;overflow:hidden}
+.ch-meter .ch-fill{height:100%;border-radius:3px;transition:width .3s}
+.ch-meter .ch-val{font-size:0.68em;font-weight:700;margin-top:1px}
+
+/* ═══ Audio Tab ═══ */
+.ar-header{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.ar-header .btn{flex:1}
+.ar-src-tabs{display:flex;gap:4px;margin-bottom:6px}
+.ar-src-tabs .ar-tab{flex:1;text-align:center;padding:6px 8px;font-size:0.72em}
+.ar-meter{height:10px;background:var(--bg);border:1px solid var(--border);border-radius:5px;overflow:hidden;margin:6px 0}
+.ar-meter-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--green),var(--orange),var(--red));transition:width .05s linear}
+.ar-info{display:flex;justify-content:space-between;font-size:0.62em;color:var(--dim)}
+.ar-mode-switch{display:flex;gap:4px;margin-bottom:6px}
+.ar-mode-btn{flex:1;padding:6px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--bg);color:var(--dim);font-size:0.7em;cursor:pointer;text-align:center;transition:all .12s}
+.ar-mode-btn.active{border-color:var(--accent);color:var(--accent2);background:rgba(124,58,237,.08)}
+.ar-simple{display:block}
+.ar-advanced{display:none}
+.ar-advanced.show{display:block}
+
+/* ═══ Desktop Responsive (≥768px) ═══ */
+@media(min-width:768px){
+  :root{--max-w:600px}
+  .tab-panel{padding:14px 18px calc(14px + var(--safe-b))}
+  .card{padding:14px;margin-bottom:10px}
+  .topbar{padding:8px 20px}
+  .stats{grid-template-columns:repeat(4,1fr);gap:6px}
+  .emergency{right:20px}
+}
+@media(min-width:1200px){
+  :root{--max-w:680px}
+  .tab-panel{padding:18px 22px}
+  .card{box-shadow:var(--shadow)}
+}
+</style>
+<script src="/static/app.js"></script>
+</head>
+<body>
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:6px">
+    <span class="dot" id="dot"></span>
+    <span id="statusText" style="font-size:0.75em">未连接</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span id="batIcon">🔋</span><span id="batText" style="font-size:0.75em">--%</span>
+    <button class="btn btn-sm" id="themeBtn" onclick="toggleTheme()">🌙</button>
+    <button class="btn btn-sm mic-btn" id="micBtn" onclick="toggleMic()">🎤</button>
+    <button class="btn btn-sm btn-p" id="bleBtn" onclick="bleConnect()">📱蓝牙</button>
+  </div>
+</div>
+<div class="mic-meter"><div class="mic-meter-fill" id="micMeter"></div></div>
+<div id="toast" class="toast"></div>
+<div class="tab-content">
+
+  <!-- Tab: AI -->
+  <div class="tab-panel active" id="tabAI">
+   <div class="tab-panel-inner">
+    <!-- 层级1: AI 配置 + 启动 -->
+    <div class="card">
+      <h3>🤖 AI 配置</h3>
+      <!-- 人格选择 -->
+      <div class="ai-select-row">
+        <select id="aiPersonality"><option>加载中...</option></select>
+      </div>
+      <!-- 主操作按钮组 -->
+      <div class="ai-actions">
+        <button class="btn btn-ai" id="btnAiToggle" onclick="toggleAI()">🤖 启动 AI</button>
+        <button class="btn-random" id="randomBtn" onclick="toggleRandom()">🎲 随机</button>
+      </div>
+      <!-- 运行参数 -->
+      <div class="ai-params">
+        <label>休息率<input type="number" id="restChance" value="25" min="0" max="100">%</label>
+        <label>间隔<input type="number" id="randIntervalMin" value="2" min="1">-<input type="number" id="randIntervalMax" value="6" min="1">s</label>
+        <label>时长<input type="number" id="aiDuration" value="1800" min="60" style="width:58px">s</label>
+      </div>
+      <!-- 模型配置（折叠） -->
+      <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:2px">
+        <div class="collapse-hdr" onclick="toggleCollapse(this)">
+          <span style="font-size:0.7em;color:var(--dim)">🔑 模型设置</span>
+          <span class="arrow">▶</span>
+        </div>
+        <div class="collapse-body">
+          <div style="display:flex;flex-direction:column;gap:6px;padding-top:8px;font-size:0.72em">
+            <label style="color:var(--dim)">API Key<input type="text" id="setApiKey" placeholder="sk-..." style="width:100%;margin-top:2px"></label>
+            <label style="color:var(--dim)">Base URL<input type="text" id="setBaseUrl" placeholder="https://api.openai.com/v1" style="width:100%;margin-top:2px"></label>
+            <label style="color:var(--dim)">Model<input type="text" id="setModel" placeholder="gpt-4o-mini" style="width:100%;margin-top:2px"></label>
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn btn-sm btn-p" onclick="saveSettings()">💾 保存</button>
+              <span id="settingsMsg" style="font-size:0.9em;color:var(--green)"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 人格编辑（折叠） -->
+    <div class="card">
+      <div class="collapse-hdr" onclick="toggleCollapse(this)">
+        <h3 style="margin-bottom:0">✏️ 人格编辑</h3>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="collapse-body">
+        <div style="padding-top:8px">
+          <div class="btn-group">
+            <select id="editPersonality" onchange="loadPersonalityForEdit()" style="flex:1"><option value="">选择人格...</option></select>
+            <button class="btn btn-sm btn-s" onclick="savePersonality()">💾保存</button>
+            <button class="btn btn-sm btn-p" onclick="createPersonality()">➕新建</button>
+          </div>
+          <div style="margin-top:4px;display:flex;gap:4px"><input type="text" id="editName" placeholder="名称" style="flex:1"><input type="text" id="editEmoji" placeholder="emoji" style="width:45px"><input type="text" id="editId" placeholder="ID" style="width:80px"></div>
+          <textarea id="editDescription" placeholder="描述..." style="width:100%;height:30px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:0.7em;color:var(--text);outline:none;margin-top:4px"></textarea>
+          <textarea id="editTraits" placeholder='{"intensity_ceiling":0.8}' style="width:100%;height:40px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:0.65em;color:var(--text);outline:none;font-family:monospace;margin-top:4px"></textarea>
+        </div>
+      </div>
+    </div>
+    <!-- 层级2: 运行状态 -->
+    <div class="card ai-status-card" id="aiStatusCard">
+      <div id="aiCurrent" style="display:none;padding:4px;background:var(--bg);border-radius:6px;margin-bottom:6px">
+        <span id="aiMood" style="font-size:1.2em">🤖</span>
+        <span id="aiBehavior" style="font-size:0.78em;color:var(--accent2);margin-left:6px">--</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:0.68em;color:var(--dim)"><span>综合强度</span><span id="aiIntensityText">0%</span></div>
+      <div class="bar-bg"><div class="bar-fill" id="aiIntensityBar" style="width:0%"></div></div>
+      <!-- 三通道实时强度 -->
+      <div class="ch-meters">
+        <div class="ch-meter"><div class="ch-label">🔄 旋转</div><div class="ch-bar"><div class="ch-fill" id="chFillA" style="width:0%;background:var(--blue)"></div></div><div class="ch-val" id="chValA" style="color:var(--blue)">0</div></div>
+        <div class="ch-meter"><div class="ch-label">💨 吮吸</div><div class="ch-bar"><div class="ch-fill" id="chFillB" style="width:0%;background:var(--pink)"></div></div><div class="ch-val" id="chValB" style="color:var(--pink)">0</div></div>
+        <div class="ch-meter"><div class="ch-label">📳 震动</div><div class="ch-bar"><div class="ch-fill" id="chFillC" style="width:0%;background:var(--orange)"></div></div><div class="ch-val" id="chValC" style="color:var(--orange)">0</div></div>
+      </div>
+      <div class="chart-wrap"><canvas id="intensityChart"></canvas></div>
+      <div class="stats">
+        <div class="stat"><div class="lb">节奏</div><div class="vl" id="aiSteps">0</div></div>
+        <div class="stat"><div class="lb">临界</div><div class="vl" id="aiEdges">0</div></div>
+        <div class="stat"><div class="lb">时间</div><div class="vl" id="aiElapsed">0s</div></div>
+        <div class="stat"><div class="lb">反馈</div><div class="vl" id="fbDisplay">--</div></div>
+      </div>
+      <div class="fb-row">
+        <div class="fb-btn" id="fbGood" onclick="sendFeedback(true)">👍</div>
+        <div class="fb-btn" id="fbBad" onclick="sendFeedback(false)">👎</div>
+      </div>
+    </div>
+    <!-- 声音寸止（始终显示开关，展开显示详情） -->
+    <div class="card" id="voicePanel">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin-bottom:0">🎤 声音寸止</h3>
+        <div style="display:flex;align-items:center;gap:5px">
+          <span id="vStatus" style="font-size:0.6em;color:var(--dim)">○ 未开启</span>
+          <button class="btn btn-sm btn-g" id="micToggleBtn" onclick="toggleMic()">开启</button>
+          <button class="btn btn-sm btn-g" id="vSimBtn" onclick="vToggleSim()">模拟</button>
+        </div>
+      </div>
+      <!-- 详情区（开启后显示） -->
+      <div id="voiceDetail" style="display:none;margin-top:8px">
+        <!-- 综合评分条 -->
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <div style="flex:1;height:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;overflow:hidden">
+            <div id="voiceScoreBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--green),var(--orange),var(--red));transition:width .12s"></div>
+          </div>
+          <span id="voiceScoreText" style="font-size:0.75em;font-weight:700;color:var(--accent2);min-width:26px;text-align:right">0</span>
+        </div>
+        <!-- 预警进度条 + 评分历史 -->
+        <div class="v-warn-bar" id="vWarnBar" style="width:0%;background:var(--green)"></div>
+        <canvas class="v-spark" id="vSparkline" height="28"></canvas>
+        <!-- 人声置信度 + 状态 -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <div class="v-confidence"><span class="dot" id="vVoiceDot" style="background:var(--dim)"></span><span id="vVoiceConf">人声 0%</span></div>
+          <span id="vTrend" style="font-size:0.58em;color:var(--dim)"></span>
+        </div>
+        <!-- 五维度可视化柱 -->
+        <div class="v-dims">
+          <div class="v-dim"><div class="v-lb">音量</div><div class="v-bar"><div class="v-fill" id="vBarVol" style="height:0%;background:var(--green)"></div></div><div class="v-num" id="vDimVol">0</div></div>
+          <div class="v-dim"><div class="v-lb">音调</div><div class="v-bar"><div class="v-fill" id="vBarPitch" style="height:0%;background:var(--blue)"></div></div><div class="v-num" id="vDimPitch">0</div></div>
+          <div class="v-dim"><div class="v-lb">密集</div><div class="v-bar"><div class="v-fill" id="vBarDensity" style="height:0%;background:var(--orange)"></div></div><div class="v-num" id="vDimDensity">0</div></div>
+          <div class="v-dim"><div class="v-lb">急促</div><div class="v-bar"><div class="v-fill" id="vBarUrgency" style="height:0%;background:var(--pink)"></div></div><div class="v-num" id="vDimUrgency">0</div></div>
+          <div class="v-dim"><div class="v-lb">持续</div><div class="v-bar"><div class="v-fill" id="vBarSustain" style="height:0%;background:var(--accent2)"></div></div><div class="v-num" id="vDimSustain">0</div></div>
+        </div>
+        <!-- 状态行 -->
+        <div style="display:flex;justify-content:space-between;font-size:0.6em;color:var(--dim)">
+          <span>输入 <b id="vRawVol" style="color:var(--green)">0</b></span>
+          <span>5s发声 <b id="vEvents" style="color:var(--text)">0</b>次</span>
+          <span>持续 <b id="vSustain" style="color:var(--text)">0s</b></span>
+          <span>延迟 <b style="color:var(--green)">&lt;150ms</b></span>
+        </div>
+        <!-- 简洁设置 -->
+        <div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
+          <div class="slider-row" style="margin-bottom:3px"><label>灵敏度</label><input type="range" id="vSensitivity" min="1" max="10" step="0.5" value="5" oninput="vSensitivityChange(this.value)"><span class="val" id="vSensitivityOut">5</span></div>
+          <div class="slider-row" style="margin-bottom:4px"><label>增益</label><input type="range" id="vGainSlider" min="1" max="15" step="0.5" value="3" oninput="vGainChange(this.value)"><span class="val" id="vGainOut">3x</span></div>
+          <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-sm btn-g" onclick="vCalibrate()" id="vCalBtn" style="font-size:0.68em">🎯 校准环境</button>
+            <button class="btn btn-sm btn-g" id="vAutoCalBtn" onclick="vAutoCalToggle()" style="font-size:0.68em;border-color:var(--green);color:var(--green)">🔄 自动:开</button>
+            <button class="btn btn-sm btn-g" onclick="vAiTune()" style="font-size:0.68em">🪄 AI调参</button>
+            <button class="btn btn-sm btn-g" id="vAdvToggle" onclick="vToggleAdv()" style="font-size:0.68em">⚙️ 高级</button>
+          </div>
+          <div id="vCalMsg" style="font-size:0.58em;color:var(--dim);margin-top:3px"></div>
+        </div>
+        <!-- 高级设置（折叠） -->
+        <div id="vAdvPanel" style="display:none;margin-top:6px">
+          <div class="v-settings">
+            <label>触发阈值<input type="number" id="vCfgThreshold" value="72" min="40" max="95" onchange="voiceEngine.cfg.climax_threshold=+this.value"></label>
+            <label>持续秒数<input type="number" id="vCfgHold" value="1.2" min="0.5" max="5" step="0.1" onchange="voiceEngine.cfg.climax_hold=+this.value"></label>
+            <label>冷却秒数<input type="number" id="vCfgCooldown" value="15" min="5" max="60" onchange="voiceEngine.cfg.cooldown=+this.value"></label>
+            <label>音量峰值<input type="number" id="vCfgVolPeak" value="60" min="20" max="100" onchange="voiceEngine.cfg.volume_peak=+this.value"></label>
+            <label>音量下限<input type="number" id="vCfgVolFloor" value="5" min="1" max="30" onchange="voiceEngine.cfg.volume_floor=+this.value"></label>
+            <label>音调上限<input type="number" id="vCfgPitchCeil" value="1200" min="400" max="3000" step="100" onchange="voiceEngine.cfg.pitch_ceiling=+this.value"></label>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="display:flex;flex-direction:column;flex:1;min-height:0">
+      <div style="font-size:0.68em;color:var(--dim);margin-bottom:3px">💬 对话</div>
+      <div class="narration" id="aiNarrationBox" style="flex:1"><div style="color:var(--dim);text-align:center;padding:20px 0;font-size:0.8em">启动AI后显示...</div></div>
+      <div class="chat-row">
+        <input type="text" id="chatInput" placeholder="说点什么..." onkeydown="if(event.key==='Enter')sendChat()">
+        <button class="btn btn-sm btn-p" onclick="sendChat()">发送</button>
+        <button class="btn btn-sm btn-g" id="voiceBtn" onmousedown="startVoice()" onmouseup="stopVoice()" ontouchstart="startVoice()" ontouchend="stopVoice()">🎙️</button>
+      </div>
+    </div>
+   </div>
+  </div>
+
+  <!-- Tab: Control -->
+  <div class="tab-panel" id="tabControl">
+   <div class="tab-panel-inner">
+    <!-- 层级1: 手动控制（最常用） -->
+    <div class="card">
+      <h3>🎚️ 手动控制</h3>
+      <div class="slider-row"><label>🔄旋转</label><input type="range" id="sliderA" min="0" max="100" value="0" oninput="updateVal('A',this.value);sendSpeedDebounced()"><span class="val" id="valA">0</span></div>
+      <div class="slider-row"><label>💨吮吸</label><input type="range" id="sliderB" min="0" max="100" value="0" oninput="updateVal('B',this.value);sendSpeedDebounced()"><span class="val" id="valB">0</span></div>
+      <div class="slider-row"><label>📳震动</label><input type="range" id="sliderC" min="0" max="100" value="0" oninput="updateVal('C',this.value);sendSpeedDebounced()"><span class="val" id="valC">0</span></div>
+      <div style="font-size:0.6em;color:var(--dim);text-align:center">拖动实时发送 · 自动模式运行时滑条将被接管</div>
+      <div class="speed-bars" style="margin-top:4px"><div class="speed-bar a" style="height:0%"></div><div class="speed-bar b" style="height:0%"></div><div class="speed-bar c" style="height:0%"></div></div>
+    </div>
+    <!-- 层级2: 自动节奏（中频） -->
+    <div class="card">
+      <h3>🎭 自动节奏</h3>
+      <div style="font-size:0.62em;color:var(--dim);margin-bottom:6px">选择节奏模式，软件自动生成速度变化</div>
+      <div class="pat-grid" style="margin-bottom:6px">
+        <div class="pat-btn" onclick="selectPattern('random')" id="pat-random"><div style="font-size:1.1em">🎲</div>随机</div>
+        <div class="pat-btn" onclick="selectPattern('wave')" id="pat-wave"><div style="font-size:1.1em">🌊</div>波浪</div>
+        <div class="pat-btn" onclick="selectPattern('pulse')" id="pat-pulse"><div style="font-size:1.1em">💓</div>脉冲</div>
+        <div class="pat-btn" onclick="selectPattern('escalate')" id="pat-escalate"><div style="font-size:1.1em">📈</div>渐进</div>
+        <div class="pat-btn" onclick="selectPattern('combo')" id="pat-combo"><div style="font-size:1.1em">🔀</div>组合</div>
+        <div class="pat-btn" onclick="selectPattern('script')" id="pat-script"><div style="font-size:1.1em">📜</div>脚本</div>
+      </div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+        <span style="font-size:0.68em;color:var(--dim)">时长</span><input type="number" id="patDuration" value="60" min="0">
+        <span style="font-size:0.68em;color:var(--dim)">间隔</span><input type="number" id="patIntervalMin" value="3" min="1">-<input type="number" id="patIntervalMax" value="10" min="1">
+      </div>
+      <div class="btn-group"><button class="btn btn-s" onclick="startPattern()">▶启动</button><button class="btn btn-d" onclick="stopPattern()">⏹停止</button></div>
+      <div id="scriptArea" style="display:none;margin-top:4px"><textarea id="scriptInput" style="width:100%;height:50px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px;font-size:0.7em;color:var(--text);outline:none;font-family:monospace">[{"a":15,"b":8,"c":5},{"a":0,"b":0,"c":0}]</textarea></div>
+    </div>
+    <!-- 层级3: 高级功能（折叠） -->
+    <div class="card">
+      <div class="collapse-hdr" onclick="toggleCollapse(this)">
+        <h3 style="margin-bottom:0">🔧 高级功能</h3>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="collapse-body">
+        <div style="padding-top:8px">
+          <!-- 设备固件节奏 -->
+          <div style="margin-bottom:10px">
+            <div style="font-size:0.7em;font-weight:600;color:var(--accent2);margin-bottom:4px">📟 设备固件节奏</div>
+            <div style="font-size:0.6em;color:var(--dim);margin-bottom:4px">硬件内置的振动波形（0=关闭, 1-7=不同节奏）</div>
+            <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px"><span style="font-size:0.7em;width:35px">旋转</span><input type="number" id="modeA" min="0" max="7" value="0"><button class="btn btn-sm btn-g" onclick="setMode('A')">设</button></div>
+            <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px"><span style="font-size:0.7em;width:35px">吮吸</span><input type="number" id="modeB" min="0" max="7" value="0"><button class="btn btn-sm btn-g" onclick="setMode('B')">设</button></div>
+            <div style="display:flex;gap:4px;align-items:center"><span style="font-size:0.7em;width:35px">震动</span><input type="number" id="modeC" min="0" max="7" value="0"><button class="btn btn-sm btn-g" onclick="setMode('C')">设</button></div>
+          </div>
+          <!-- 录制回放 -->
+          <div style="border-top:1px solid var(--border);padding-top:8px">
+            <div style="font-size:0.7em;font-weight:600;color:var(--accent2);margin-bottom:4px">⏺ 录制与回放</div>
+            <div style="font-size:0.6em;color:var(--dim);margin-bottom:4px">记录速度变化，可回放或导出为脚本</div>
+            <div class="btn-group">
+              <button class="btn btn-sm btn-g" id="recBtn" onclick="toggleRecord()">⏺ 录制</button>
+              <button class="btn btn-sm btn-s" onclick="playRecording()">▶ 回放</button>
+              <button class="btn btn-sm btn-p" onclick="exportRecording()">💾 导出</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+   </div>
+  </div>
+
+  <!-- Tab: Audio Reactive -->
+  <div class="tab-panel" id="tabAudio">
+   <div class="tab-panel-inner">
+    <div class="card">
+      <h3>🎵 音频跟随</h3>
+      <!-- 主操作按钮 -->
+      <div class="ar-header">
+        <button class="btn btn-s" id="arBtnStart" onclick="arToggle()">▶ 启动跟随</button>
+        <button class="btn btn-g" onclick="arCalibrate()">🎯 校准</button>
+        <label style="font-size:0.62em;color:var(--dim);display:flex;align-items:center;gap:3px;white-space:nowrap"><input type="checkbox" id="arDemoMode"> 模拟</label>
+      </div>
+      <!-- 音源选择 -->
+      <div class="ar-src-tabs">
+        <button class="btn btn-sm ar-tab active" data-ar-tab="file" onclick="arSwitchTab('file')">📁 本地文件</button>
+        <button class="btn btn-sm ar-tab" data-ar-tab="screen" onclick="arSwitchTab('screen')">🖥️ 屏幕声音</button>
+      </div>
+      <div id="arTabFile" class="ar-panel active">
+        <input type="file" id="arMediaFile" accept="video/*,audio/*" style="font-size:0.68em;width:100%;margin-bottom:4px">
+        <video id="arMediaPlayer" controls playsinline crossorigin="anonymous" style="width:100%;max-height:140px;background:#000;border-radius:6px;border:1px solid var(--border)"></video>
+      </div>
+      <div id="arTabScreen" class="ar-panel">
+        <div style="font-size:0.62em;color:var(--dim);margin-bottom:4px">选择标签页/窗口并勾选共享音频</div>
+        <button class="btn btn-sm btn-p" id="arBtnCapture">📡 捕获屏幕声音</button>
+        <video id="arScreenPreview" autoplay muted playsinline style="width:100%;max-height:100px;background:#000;border-radius:6px;border:1px solid var(--border);margin-top:4px"></video>
+      </div>
+      <!-- 实时表 -->
+      <div class="ar-meter"><div class="ar-meter-fill" id="arMeterFill"></div></div>
+      <div class="ar-info">
+        <span>响度 <b id="arRmsText" style="color:var(--text)">0.000</b></span>
+        <span>强度 <b id="arIntensityText" style="color:var(--accent2)">0%</b></span>
+        <span>输出 <b id="arSpeedText" style="color:var(--text)">A0 B0 C0</b></span>
+      </div>
+    </div>
+    <!-- 参数设置 -->
+    <div class="card">
+      <div class="ar-mode-switch">
+        <div class="ar-mode-btn active" id="arModeSimple" onclick="arSetMode('simple')">✨ 简单</div>
+        <div class="ar-mode-btn" id="arModeAdvanced" onclick="arSetMode('advanced')">🔧 高级</div>
+      </div>
+      <div class="ar-simple" id="arSimplePanel">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+          <select id="arPreset" onchange="arApplyPreset(this.value)" style="flex:1">
+            <option value="gentle">🌸 轻柔</option>
+            <option value="standard" selected>🎯 标准</option>
+            <option value="intense">🔥 激烈</option>
+          </select>
+          <button class="btn btn-sm btn-g" onclick="arAiRecommend()">🪄 AI推荐</button>
+        </div>
+        <div class="slider-row"><label>灵敏度</label><input type="range" id="arSensitivity" min="1" max="10" step="0.5" value="5" oninput="arSensitivityChange(this.value)"><span class="val" id="arSensitivityOut">5</span></div>
+        <div style="font-size:0.58em;color:var(--dim);text-align:center">灵敏度越高，轻微声音也会触发较强输出</div>
+      </div>
+      <div class="ar-advanced" id="arAdvancedPanel">
+        <div style="font-size:0.58em;color:var(--dim);margin-bottom:4px">⚠️ 高级参数，先小范围测试</div>
+        <div class="slider-row"><label>静音阈值</label><input type="range" id="arNoiseFloor" min="0" max="0.08" step="0.0005" value="0.006"><span class="val" id="arNoiseFloorOut">0.006</span></div>
+        <div class="slider-row"><label>增益</label><input type="range" id="arGain" min="0.5" max="30" step="0.1" value="6.0"><span class="val" id="arGainOut">6.0</span></div>
+        <div class="slider-row"><label>弱声增强</label><input type="range" id="arLowBoost" min="0.20" max="1" step="0.05" value="0.45"><span class="val" id="arLowBoostOut">0.45</span></div>
+        <div class="slider-row"><label>最低强度</label><input type="range" id="arMinIntensity" min="0" max="0.40" step="0.01" value="0.06"><span class="val" id="arMinIntensityOut">0.06</span></div>
+        <div class="slider-row"><label>冲击响应</label><input type="range" id="arAttack" min="0.05" max="1" step="0.01" value="0.45"><span class="val" id="arAttackOut">0.45</span></div>
+        <div class="slider-row"><label>回落速度</label><input type="range" id="arRelease" min="0.01" max="0.8" step="0.01" value="0.12"><span class="val" id="arReleaseOut">0.12</span></div>
+        <div class="slider-row"><label>发送Hz</label><input type="range" id="arWriteHz" min="1" max="12" step="1" value="6"><span class="val" id="arWriteHzOut">6</span></div>
+        <div class="slider-row"><label>静音归零</label><input type="range" id="arSilentStop" min="0.3" max="5" step="0.1" value="1.2"><span class="val" id="arSilentStopOut">1.2</span></div>
+        <div style="border-top:1px solid var(--border);padding-top:6px;margin-top:4px">
+          <div style="font-size:0.62em;color:var(--dim);margin-bottom:4px">🎚️ 通道与上限</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:0.65em;margin-bottom:4px">
+            <label style="display:flex;align-items:center;gap:3px;color:var(--dim)"><input type="checkbox" id="arEnableA" checked> A旋转</label>
+            <label style="display:flex;align-items:center;gap:3px;color:var(--dim)"><input type="checkbox" id="arEnableB"> B吮吸</label>
+            <label style="display:flex;align-items:center;gap:3px;color:var(--dim)"><input type="checkbox" id="arEnableC" checked> C震动</label>
+          </div>
+          <div class="slider-row"><label>A上限</label><input type="range" id="arMaxA" min="0" max="40" value="18"><span class="val" id="arMaxAOut">18</span></div>
+          <div class="slider-row"><label>A权重</label><input type="range" id="arWeightA" min="0" max="1" step="0.05" value="0.70"><span class="val" id="arWeightAOut">0.70</span></div>
+          <div class="slider-row"><label>B上限</label><input type="range" id="arMaxB" min="0" max="20" value="8"><span class="val" id="arMaxBOut">8</span></div>
+          <div class="slider-row"><label>B权重</label><input type="range" id="arWeightB" min="0" max="1" step="0.05" value="0.35"><span class="val" id="arWeightBOut">0.35</span></div>
+          <div class="slider-row"><label>C上限</label><input type="range" id="arMaxC" min="0" max="20" value="12"><span class="val" id="arMaxCOut">12</span></div>
+          <div class="slider-row"><label>C权重</label><input type="range" id="arWeightC" min="0" max="1" step="0.05" value="1.0"><span class="val" id="arWeightCOut">1.00</span></div>
+        </div>
+      </div>
+    </div>
+   </div>
+  </div>
+
+  <!-- Tab: Settings (含日志) -->
+  <div class="tab-panel" id="tabSettings">
+   <div class="tab-panel-inner">
+    <div class="card">
+      <h3>⚙️ 设备设置</h3>
+      <div style="display:flex;flex-direction:column;gap:6px;font-size:0.75em">
+        <label style="color:var(--dim)">BLE设备名<input type="text" id="setDeviceName" placeholder="BLE-DEVICE" style="width:100%;margin-top:2px"></label>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:center">
+        <button class="btn btn-sm btn-p" onclick="saveDeviceSettings()">💾 保存</button>
+        <span id="deviceSettingsMsg" style="font-size:0.7em;color:var(--green)"></span>
+      </div>
+      <div style="margin-top:6px;font-size:0.6em;color:var(--dim)">保存后需重启服务生效</div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <h3 style="margin-bottom:0">📋 运行日志</h3>
+        <button class="btn btn-sm btn-g" onclick="clearLog()">清空</button>
+      </div>
+      <div class="log-box" id="logBox" style="height:220px"></div>
+    </div>
+    <div class="card">
+      <h3>ℹ️ 关于</h3>
+      <div style="font-size:0.68em;color:var(--dim);line-height:1.6">
+        YCY Controller v2.0<br>
+        AI驱动 · 音频跟随 · 声音寸止<br>
+        <span style="font-size:0.9em">三通道: 🔄旋转(0-40) 💨吮吸(0-20) 📳震动(0-20)</span>
+      </div>
+    </div>
+   </div>
+  </div>
+</div>
+
+<div class="emergency" style="display:flex;flex-direction:column;align-items:center;gap:4px">
+    <input type="number" id="stopDuration" value="0" min="0" max="60" style="width:52px;text-align:center;font-size:0.65em;padding:4px 2px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)" placeholder="秒">
+    <button class="btn btn-d" onclick="emergencyStop()">🛑</button>
+    <span style="font-size:0.5em;color:var(--dim)">0=永久</span>
+  </div>
+
+<div class="tabbar">
+  <button onclick="switchTab('tabAI')" id="tabBtnAI" class="active">🤖<span>AI</span></button>
+  <button onclick="switchTab('tabControl')" id="tabBtnControl">🎮<span>控制</span></button>
+  <button onclick="switchTab('tabAudio')" id="tabBtnAudio">🎵<span>音频</span></button>
+  <button onclick="switchTab('tabSettings')" id="tabBtnSettings">⚙️<span>设置</span></button>
+</div>
+
+</body>
+</html>
